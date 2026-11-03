@@ -21,10 +21,31 @@ The added 9B **header-only unit checks** cover the GGUF's 32 layers, hidden size
 
 A **GPU-memory preflight** now refuses a dense model whose packed weights plus a minimal reserve cannot fit the currently free VRAM. This prevents an avoidable partial-load crash; it does **not** provide CPU/GPU offloading.
 
+
+## Confirmed project decisions (3 November 2026)
+
+- **Personal use only:** run the local provider on the owner's Windows PC. No multi-user hosting or distribution work.
+- **Balanced:** prefer acceptable response time and reliable tool choices over highest parameter count.
+- **No interference:** don't stop services, close applications, modify NVIDIA drivers, or allocate enough RAM/VRAM to risk existing work. Use GitHub-hosted tests before any GPU benchmark.
+
+## Implemented in this branch
+
+- Merged the unmerged dense Qwen family work from upstream PR #4845 into the fork's feature-branch ancestry.
+- Added synthetic Qwen3.5-9B GGUF geometry checks. **CPU-only GitHub Actions check passed**: https://github.com/MS1317/Strata/actions/runs/41572456482 . No actual model was downloaded or run.
+- Experimental **file-backed matrix streaming**: the dense matrix tensors remain backed by GGUF memory mapping. A single reusable GPU staging allocation receives each matrix before its kernel reads it. All staging copies and GPU kernels use one CUDA stream to preserve ordering; CUDA graph capture is disabled in this mode. This is GPU computation with CPU/storage-backed weights, **not** native CPU matmul offloading.
+- Dense model startup checks packed weights and selects streaming automatically when they cannot fit VRAM. It avoids optional MTP-layer loading in streaming mode unless requested.
+- GPU preflight rejects contexts whose FP32 K/V cache plus staging and an allowance for buffers already exceed free VRAM. The threshold is conservative, **not** an exact allocator prediction.
+
+## Known blocking limitation
+
+The current Qwen35 engine stores K/V as float32 on the GPU. For Qwen3.5 9B's eight full-attention layers, this alone requires about **2 GiB at 32K** and **4 GiB at 64K**. Therefore **64K cannot work on this GTX 1650 until K/V cache storage is redesigned** (for example quantized or RAM-backed K/V). Streaming the model weights alone does not solve it.
+
+Further required validation: CUDA compilation, startup on a small test GGUF, real Qwen3.5-9B token parity, repeated calls, long context quality, tool calls and measured latency. None have passed yet.
+
 ## Work remaining, in order
 
-1. **Implement dense weight staging.** Currently `src/qwen35/q36_engine.cu` allocates every dense matrix with `cudaMalloc`. Plan each layer's GPU/RAM placement using real GGUF tensor sizes. Keep a bounded GPU staging area, upload a needed matrix/layer at execution time, and reuse the buffers. Never treat regular dense layers as MoE experts.
-2. **Make streaming safe with inference scheduling.** Synchronize CUDA work before reusing staged memory; avoid stale CUDA graph pointers; make loading, cancellation and repeated calls safe. Start with a correctness-oriented slower path.
+1. **Validate file-backed dense matrix staging.** The first implementation exists, but has not been CUDA-compiled or tested with a real GGUF. Verify every weight path, CUDA stream ordering, OOM handling and output correctness.
+2. **Improve streaming performance.** The first version transfers one matrix at a time for correctness. Test selective GPU residency and overlap only after establishing a reliable baseline.
 3. **Validate model correctness.** Compare small prompts and token sequences against llama.cpp with identical GGUF and decoding settings; test attention state and an untied output head. Check long output and a second request in the same chat.
 4. **Add larger contexts.** Budget the recurrent state, attention KV cache, output buffers, model weights, Windows memory use and CPU/GPU transfers separately. Begin with a short smoke test; then 32K, 64K and optionally 128K. Try quantized KV only after correctness is established.
 5. **Connect Weehzi via the existing OpenAI-compatible API.** Check streaming responses, native tool calls, error handling, compaction and sustained multistep agent sessions. Measure the actual request token count, not just base.md or `CLAUDE.md`.
