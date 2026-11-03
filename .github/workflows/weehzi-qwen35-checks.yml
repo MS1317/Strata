@@ -21,8 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Configure CPU-only unit-test build
         run: cmake -S . -B build-weehzi -DSTRATA_BUILD_TESTS=ON -DSTRATA_ENABLE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release
-      - name: Build model-family test
+      - name: Build model-family and compact-KV tests
         run: cmake --build build-weehzi --target model_family_test qwen35_kv_q8_test --parallel 2
-      - name: Run model-family test
-        run: ctest --test-dir build-weehzi -R '^(model_family_test|qwen35_kv_q8_test)
- --output-on-failure
+      - name: Run model-family and compact-KV tests
+        run: ctest --test-dir build-weehzi --output-on-failure
