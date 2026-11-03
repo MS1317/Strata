@@ -80,6 +80,7 @@ double ms_since(Clock::time_point t) { return std::chrono::duration<double, std:
 
 constexpr int kThreads = 256;
 constexpr int kChunkCells = 256;   // attention split-K chunk
+constexpr int kDenseHeadTileRows = 4096; // rows of streamed output head held in VRAM at once
 constexpr int kConvTile = 16;     // tokens per block of the prompt conv (k_conv_seq tile mode)
 
 // ------------------------------------------------------------------------------------------------ small kernels
@@ -1132,7 +1133,12 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         if (m.stream_dense) {
             w.host = gm.shard(s).tensor_data(*t);
             w.bytes = (size_t) nb;
-            m.max_stream_bytes = std::max(m.max_stream_bytes, w.bytes);
+            // A large output vocabulary can exceed 500 MB. It will be
+            // evaluated in bounded row tiles, not copied in one shot.
+            const size_t stage_bytes = name == "output.weight"
+                ? std::min(w.bytes, row_bytes(w.type, w.n_in) * (size_t) kDenseHeadTileRows)
+                : w.bytes;
+            m.max_stream_bytes = std::max(m.max_stream_bytes, stage_bytes);
             return w;
         }
         uint8_t* d = nullptr;
@@ -1258,10 +1264,12 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             m.head.d = m.embd;
             m.head.host = m.embd_host;
             m.head.bytes = m.embd_host ? (size_t) nb : 0;
-            if (m.embd_host) m.max_stream_bytes = std::max(m.max_stream_bytes, (size_t) nb);
             m.head.type = m.embd_type;
             m.head.n_in = (int) t->shape[0];
             m.head.n_out = (int) t->shape[1];
+            if (m.embd_host)
+                m.max_stream_bytes = std::max(m.max_stream_bytes,
+                    std::min((size_t) nb, row_bytes(m.head.type, m.head.n_in) * (size_t) kDenseHeadTileRows));
         }
     }
     std::fprintf(stderr, "strata-q36: %s: %zu tensors (layout checked), %.2f GiB on the GPU in %.1f s (the routed "
@@ -1364,6 +1372,7 @@ struct Engine {
     // On a 4GB GPU, gather only the token rows actually requested.
     uint8_t* embed_stage = nullptr;
     int32_t* embed_indices = nullptr;
+    float* head_tile_logits = nullptr; // max kVerify rows, max kDenseHeadTileRows output logits
     std::vector<uint8_t> host_embed_rows;
     std::vector<int32_t> host_token_ids;
     int mtp_d = 0;   // MTP drafts per speculative step (0: none; greedy requests only)
@@ -1566,6 +1575,8 @@ struct Engine {
             CK(cudaMemcpyAsync(embed_indices, indices.data(), n * sizeof(int32_t),
                                cudaMemcpyHostToDevice, st));
             CK(cudaStreamSynchronize(st)); // indices' temporary storage can be released
+            if (m->head.host)
+                head_tile_logits = dalloc((size_t) kVerify * kDenseHeadTileRows);
         }
         if (m->stream_dense) {
             use_graph = false;
@@ -2425,7 +2436,32 @@ struct Engine {
     /// logits [n][V] = W_out hn rows, and each row's greedy pick.
     void head_rows(const float* hn, int n, float* lg, int32_t* pk) {
         const auto& g = m->g;
-        mm(m->head, hn, lg, n);
+        if (m->head.host) {
+            const Mat& hd = m->head;
+            const size_t row = row_bytes(hd.type, hd.n_in);
+            if (n > kVerify || !head_tile_logits || !row || row * kDenseHeadTileRows > dense_stage_capacity) {
+                std::fprintf(stderr, "strata-q36: streamed head staging configuration invalid\n");
+                std::exit(1);
+            }
+            // The output row stride remains the complete vocabulary size.
+            // A tile is generated in contiguous scratch and copied row-wise
+            // to that original layout before argmax/sampling consumes it.
+            prep(hn, hd.n_in, n, q8);
+            const size_t qb = K::native_q8_1_bytes(hd.n_in, 1);
+            for (int start = 0; start < hd.n_out; start += kDenseHeadTileRows) {
+                const int nr = std::min(kDenseHeadTileRows, hd.n_out - start);
+                CK(cudaMemcpyAsync(dense_stage, hd.host + (size_t) start * row,
+                                   (size_t) nr * row, cudaMemcpyHostToDevice, st));
+                for (int j = 0; j < n; ++j)
+                    K::native_mmvq(hd.type, dense_stage, (const uint8_t*) q8 + (size_t) j * qb,
+                                   head_tile_logits + (size_t) j * nr, hd.n_in, nr, 1, st);
+                CK(cudaMemcpy2DAsync(lg + start, (size_t) hd.n_out * sizeof(float),
+                                     head_tile_logits, (size_t) nr * sizeof(float),
+                                     (size_t) nr * sizeof(float), n, cudaMemcpyDeviceToDevice, st));
+            }
+        } else {
+            mm(m->head, hn, lg, n);
+        }
         k_argmax<<<dim3(kArgBlocks, n), kThreads, 0, st>>>(lg, (int) g.n_vocab, pk, amv, ami, false);
         k_argmax<<<dim3(1, n), kThreads, 0, st>>>(lg, kArgBlocks, pk, amv, ami, true);
     }
