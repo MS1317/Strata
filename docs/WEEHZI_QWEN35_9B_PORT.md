@@ -28,7 +28,8 @@ Synthetic GGUF header tests check the planned Qwen3.5 9B dimensions (32 layers, 
 3. **Tiled output head:** The large vocabulary output matrix is processed in tiles of at most 4096 rows, with the output assembled before token selection. No full-head GPU allocation is required in streaming mode.
 4. **Q8 attention history:** For streaming dense models, each 256-element key/value vector uses 256 signed bytes plus one 32-bit scale (260 bytes). The GPU writes and reads Q8 during decode, dequantizes to temporary FP16 buffers during prompt processing, and supports session-state copies. Resident MoE models retain their original FP32 cache.
 5. **Protective GPU preflight:** The engine estimates context cache, staging, attention scratch and reserve before allocating, and refuses a configuration exceeding the GPU memory available at that moment. This is a conservative estimate, not a proof of safe allocation or a guaranteed peak.
-6. **Skip unnecessary MTP:** Optional draft-layer weights are not loaded in dense streaming mode unless explicitly requested.
+6. **Reduced decode scratch:** Split-K attention scratch now holds at most eight simultaneous decode/verify rows (the actual consumer's maximum), instead of reserving room for 64. At 64K context with 16 attention heads, this reduces its main float32 partial buffer from about 256 MiB to about 32 MiB.
+7. **Skip unnecessary MTP:** Optional draft-layer weights are not loaded in dense streaming mode unless explicitly requested.
 
 ### Conversation cache at 64K — Qwen3.5 9B (one session, eight attention layers)
 
@@ -44,7 +45,7 @@ Synthetic GGUF header tests check the planned Qwen3.5 9B dimensions (32 layers, 
 - GitHub-hosted **CPU-only** tests for synthetic Qwen3.5-9B metadata.
 - GitHub-hosted **CPU-only** Q8 reference compression and 64K memory accounting test.
 - GitHub-hosted **CPU-only** mapped-embedding row-gather and output-head tile-size test.
-- GitHub-hosted **CUDA 12.8 object compilation** (`nvcc -std=c++20 -arch=sm_75`) has passed for earlier versions of this branch. Re-run it after later code changes and check its exact commit.
+- GitHub-hosted **CUDA 12.8 object compilation** (`nvcc -std=c++20 -arch=sm_75`) has passed for the GPU-cache, embedding-staging and tiled-output-head implementation. Re-run it after later code changes and check the exact commit.
 
 A passing CPU test and a successful CUDA object compilation do **not** establish inference correctness. No real 9B model has been downloaded or run.
 
