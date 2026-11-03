@@ -24,4 +24,4 @@ jobs:
       - name: Build model-family and compact-KV tests
         run: cmake --build build-weehzi --target model_family_test qwen35_kv_q8_test --parallel 2
       - name: Run model-family and compact-KV tests
-        run: ctest --test-dir build-weehzi --output-on-failure
+        run: ctest --test-dir build-weehzi -R 'model_family_test|qwen35_kv_q8_test' --output-on-failure
