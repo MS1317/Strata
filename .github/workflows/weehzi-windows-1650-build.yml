@@ -1,0 +1,54 @@
+name: Weehzi Strata Windows GTX1650 build
+on:
+  push:
+    branches:
+      - feat/qwen35-9b-long-context
+    paths:
+      - '.github/workflows/weehzi-windows-1650-build.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-strata-q36:
+    runs-on: windows-2022
+    timeout-minutes: 75
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+      - name: Install CUDA toolkit (no GPU required)
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.8.1'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "nvrtc", "visual_studio_integration"]'
+      - name: Check build tools
+        shell: pwsh
+        run: |
+          cmake --version
+          nvcc --version
+      - name: Configure for GTX 1650 (sm_75)
+        shell: pwsh
+        run: |
+          cmake -S . -B build-weehzi-win -G "Visual Studio 17 2022" -A x64 -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_BUILD_TESTS=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_MMQ_KQUANTS=ON
+      - name: Build Qwen3.5 engine
+        shell: pwsh
+        run: cmake --build build-weehzi-win --target strata-q36 --config Release --parallel 3
+      - name: Stage Windows binary and CUDA dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package | Out-Null
+          $engine = Get-ChildItem build-weehzi-win -Recurse -File -Filter strata-q36.exe | Select-Object -First 1
+          if (-not $engine) { throw "No strata-q36.exe produced" }
+          Copy-Item $engine.FullName package/
+          Get-ChildItem $engine.Directory.FullName -File -Filter *.dll | ForEach-Object { Copy-Item $_.FullName package/ -Force }
+          Get-ChildItem "$env:CUDA_PATH/bin" -File -Filter *.dll | Where-Object {
+            $_.Name -match '^(cudart64|cublas64|cublasLt64|nvrtc64|nvrtc-builtins)'
+          } | ForEach-Object { Copy-Item $_.FullName package/ -Force }
+          Get-ChildItem package | Select-Object Name,Length | Format-Table -AutoSize
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-GTX1650-Windows-x64
+          path: package/
+          retention-days: 7
+          if-no-files-found: error
