@@ -948,7 +948,8 @@ struct Model {
     std::vector<Layer> layers;
     const float* out_norm = nullptr;
     Mat head;
-    const uint8_t* embd = nullptr;
+    const uint8_t* embd = nullptr; // resident GPU embedding table
+    const uint8_t* embd_host = nullptr; // mmap GGUF table for streaming
     int embd_type = -1;
     size_t embd_row = 0;
 };
@@ -1243,13 +1244,21 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         m.embd_type = (int) t->type;
         m.embd_row = row_bytes(m.embd_type, (int64_t) t->shape[0]);
         const uint64_t nb = strata::tensor_payload_bytes(*t);
-        uint8_t* d = nullptr;
-        CK(cudaMalloc(&d, nb));
-        CK(cudaMemcpy(d, gm.shard(s).tensor_data(*t), nb, cudaMemcpyHostToDevice));
-        m.embd = d;
-        bytes += nb;
+        if (m.stream_dense) {
+            // Keep the large vocabulary embedding table in the GGUF mapping.
+            m.embd_host = gm.shard(s).tensor_data(*t);
+        } else {
+            uint8_t* d = nullptr;
+            CK(cudaMalloc(&d, nb));
+            CK(cudaMemcpy(d, gm.shard(s).tensor_data(*t), nb, cudaMemcpyHostToDevice));
+            m.embd = d;
+            bytes += nb;
+        }
         if (tied_head) {
             m.head.d = m.embd;
+            m.head.host = m.embd_host;
+            m.head.bytes = m.embd_host ? (size_t) nb : 0;
+            if (m.embd_host) m.max_stream_bytes = std::max(m.max_stream_bytes, (size_t) nb);
             m.head.type = m.embd_type;
             m.head.n_in = (int) t->shape[0];
             m.head.n_out = (int) t->shape[1];
@@ -1352,6 +1361,11 @@ struct Engine {
     // so a queued copy cannot overwrite weights while an earlier kernel reads them.
     uint8_t* dense_stage = nullptr;
     size_t dense_stage_capacity = 0;
+    // On a 4GB GPU, gather only the token rows actually requested.
+    uint8_t* embed_stage = nullptr;
+    int32_t* embed_indices = nullptr;
+    std::vector<uint8_t> host_embed_rows;
+    std::vector<int32_t> host_token_ids;
     int mtp_d = 0;   // MTP drafts per speculative step (0: none; greedy requests only)
 
     // ---- sessions: the conversation states.  One for a single-request engine; --batch N keeps N, each with its own
@@ -1541,6 +1555,18 @@ struct Engine {
             }
         }
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+        if (m->embd_host) {
+            const size_t n = (size_t) tmax;
+            CK(cudaMalloc(&embed_stage, n * m->embd_row));
+            CK(cudaMalloc(&embed_indices, n * sizeof(int32_t)));
+            host_embed_rows.resize(n * m->embd_row);
+            host_token_ids.resize(n);
+            std::vector<int32_t> indices(n);
+            for (size_t i = 0; i < n; ++i) indices[i] = (int32_t) i;
+            CK(cudaMemcpyAsync(embed_indices, indices.data(), n * sizeof(int32_t),
+                               cudaMemcpyHostToDevice, st));
+            CK(cudaStreamSynchronize(st)); // indices' temporary storage can be released
+        }
         if (m->stream_dense) {
             use_graph = false;
             dense_stage_capacity = m->max_stream_bytes;
@@ -1765,6 +1791,35 @@ struct Engine {
         staged.d = dense_stage;
         staged.host = nullptr;
         return staged;
+    }
+
+    // Collect the current token's quantized embedding rows from memory-mapped GGUF
+    // into a small GPU table, then reuse the standard GPU embedding decoder.
+    void embed_rows(const int32_t* token_ids, int T, float* output) {
+        if (!m->embd_host) {
+            K::iq_embed_rows(m->embd_type, m->embd, m->embd_row,
+                             token_ids, T, m->g.n_embd, output, st);
+            return;
+        }
+        if (T < 0 || (size_t) T > host_token_ids.size()) {
+            std::fprintf(stderr, "strata-q36: embedding batch exceeds staging capacity\n");
+            std::exit(1);
+        }
+        CK(cudaMemcpyAsync(host_token_ids.data(), token_ids, (size_t) T * sizeof(int32_t),
+                           cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        for (int i = 0; i < T; ++i) {
+            int32_t id = host_token_ids[(size_t) i];
+            // An image-pad row is overwritten by k_put_rows after this function.
+            if (id < 0 || id >= m->g.n_vocab) id = 0;
+            std::memcpy(host_embed_rows.data() + (size_t) i * m->embd_row,
+                        m->embd_host + (size_t) id * m->embd_row, m->embd_row);
+        }
+        CK(cudaMemcpyAsync(embed_stage, host_embed_rows.data(), (size_t) T * m->embd_row,
+                           cudaMemcpyHostToDevice, st));
+        CK(cudaStreamSynchronize(st)); // row staging storage can be reused
+        K::iq_embed_rows(m->embd_type, embed_stage, m->embd_row, embed_indices,
+                         T, m->g.n_embd, output, st);
     }
 
     /// y [T][n_out] = W x [T][n_in] on the native MMVQ, 8 columns per launch.
@@ -2357,7 +2412,7 @@ struct Engine {
                 if (lhy(l)) seq.push_back((int) l);
             stream_begin(seq);
         }
-        K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok, T, N, x, st);
+        embed_rows(tok, T, x);
         if (map_on) k_put_rows<<<T, kThreads, 0, st>>>(x, d_img, d_map, N);   // a picture's cells take its rows
         k_rms<<<T, kThreads, 0, st>>>(x, m->layers[0].attn_norm, h, N, m->eps);   // later layers: from k_moe_out
         for (size_t l = 0; l < m->layers.size(); ++l) {
@@ -2408,7 +2463,7 @@ struct Engine {
         const auto& g = m->g;
         const int N = (int) g.n_embd;
         if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && use_mmq) stream_begin({(int) m->layers.size()});
-        K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
+        embed_rows(tok_m, T, y);
         if (map_on) k_put_rows<<<T, kThreads, 0, st>>>(y, d_img, d_map, N);
         k_rms_ld<<<T, kThreads, 0, st>>>(y, N, m->mtp_enorm, mtp_cat, 2 * N, N, m->eps);              // [e | ...]
         k_rms_ld<<<T, kThreads, 0, st>>>(seeds, N, m->mtp_hnorm, mtp_cat + N, 2 * N, N, m->eps);      // [... | h]
@@ -2894,7 +2949,7 @@ struct Engine {
         rows_G = T;
         rows_deferred = true;
         run_graph_key(3000 + T, [&] {
-            K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
+            embed_rows(tok_m, T, y);
             k_rms_ld<<<T, kThreads, 0, st>>>(y, N, m->mtp_enorm, mtp_cat, 2 * N, N, m->eps);                 // [e | ...]
             k_rms_ld<<<T, kThreads, 0, st>>>(mtp_seed(), N, m->mtp_hnorm, mtp_cat + N, 2 * N, N, m->eps);   // [... | h]
             mm(m->eh_proj, mtp_cat, x, T);
