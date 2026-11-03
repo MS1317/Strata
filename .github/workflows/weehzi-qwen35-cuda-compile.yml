@@ -1,5 +1,10 @@
 name: Weehzi CUDA compile check (no GPU run)
 on:
+  push:
+    branches:
+      - feat/qwen35-9b-long-context
+    paths:
+      - '.github/workflows/weehzi-qwen35-cuda-compile.yml'
   workflow_dispatch:
 permissions:
   contents: read
