@@ -1,0 +1,17 @@
+name: Weehzi CUDA compile check (no GPU run)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compile-qwen35:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    container:
+      image: nvidia/cuda:12.8.1-devel-ubuntu22.04
+    steps:
+      - name: Install Git and C++ compiler
+        run: apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git g++ make
+      - uses: actions/checkout@v4
+      - name: Compile Qwen3.5 CUDA engine object without running a GPU
+        run: nvcc -std=c++20 -arch=sm_75 --expt-relaxed-constexpr -Iinclude -c src/qwen35/q36_engine.cu -o /tmp/q36_engine.o
