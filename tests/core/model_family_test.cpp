@@ -56,6 +56,7 @@ const Dims kFlashNext = {48, 2560, 24, 2, 256, 512, 10, 640, 640, 4, 128, 16, 48
 const Dims kTiny36 = {5, 64, 2, 1, 16, 4, 2, 32, 32, 4, 8, 2, 4, 32, 4, 1, 0, 0, 0, 0};
 // a dense qwen35 (Qwen3.5-4B / Qwen3.8-4B distill): the same trunk, one dense MLP, no experts, MTP optional
 const Dims kTinyDense = {5, 64, 2, 1, 16, 0, 0, 32, 32, 4, 8, 2, 4, 32, 4, 1, 0, 0, 0, 0};
+const Dims kQwen35NineB = {32, 4096, 16, 4, 256, 0, 0, 12288, 12288, 4, 128, 16, 32, 4096, 4, 0, 0, 0, 0, 0};
 const Dims kTinyFlash = {8, 64, 2, 1, 16, 4, 2, 32, 32, 4, 8, 2, 4, 32, 4, 0, 2, 8, 2, 8};
 
 std::vector<Kv> metadata(const char* arch, const Dims& d, uint64_t vocab) {
@@ -324,6 +325,22 @@ int main(int argc, char** argv) {
         fixture::write(nf, kv, {});
         check(strata::check_architecture(strata::GgufFile(nf.string())).find("feed_forward_length") != std::string::npos,
               "a dense file without feed_forward_length is refused, naming the key");
+        const fs::path nine = d.path / "qwen35-9b.gguf";
+        fixture::write(nine, metadata("qwen35", kQwen35NineB, 16), {});
+        strata::core::ModelGeometry nineg;
+        int64_t ninek = -1;
+        std::string nineerr;
+        const bool nineok = geometry_of(nine, nineg, ninek, nineerr);
+        check(nineok, "Qwen3.5-9B GGUF geometry loads");
+        if (nineok) {
+            check(nineg.n_layers == 32 && nineg.n_embd == 4096 &&
+                  nineg.n_ff == 12288 && nineg.n_head == 16 &&
+                  nineg.n_head_kv == 4 && nineg.head_dim == 256,
+                  "Qwen3.5-9B: dimensions");
+            check(nineg.n_qsa_layers() == 8 && nineg.n_gdn_layers() == 24 &&
+                  nineg.ssm_conv_channels == 8192 && ninek == 0,
+                  "Qwen3.5-9B: hybrid attention layout");
+        }
         const std::string mo = layout_error(d.path, "qwen35moe", kTiny36, 16, [](std::vector<Tensor>& ts) {
             for (auto it = ts.begin(); it != ts.end(); ++it)
                 if (it->name == "output.weight") { ts.erase(it); break; }

@@ -1019,6 +1019,26 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     size_t checked = 0;
     if (!strata::core::check_gguf_layout(gm, m.g, err, &checked)) return false;
     const auto& g = m.g;
+    // Dense weights must fit in VRAM until CPU staging is implemented.
+    if (strata::model_family_dense_ffn(g.family)) {
+        uint64_t packed = 0;
+        for (const auto& w : strata::core::global_tensors(g))
+            if (const auto* t = gm.find(w.name)) packed += strata::tensor_payload_bytes(*t);
+        for (int64_t i = 0; i < g.n_layers + g.n_mtp_layers; ++i)
+            for (const auto& w : strata::core::layer_tensors(g, i))
+                if (const auto* t = gm.find("blk." + std::to_string(i) + "." + w.name))
+                    packed += strata::tensor_payload_bytes(*t);
+        size_t free_vram = 0, total_vram = 0;
+        CK(cudaMemGetInfo(&free_vram, &total_vram));
+        constexpr size_t reserve = 512ull * 1024 * 1024;
+        if (packed > free_vram || free_vram - packed < reserve) {
+            err = "dense qwen35 needs at least " +
+                  std::to_string((packed + reserve) / (1024 * 1024)) +
+                  " MiB VRAM; only " + std::to_string(free_vram / (1024 * 1024)) +
+                  " MiB free. CPU/RAM weight staging not yet implemented.";
+            return false;
+        }
+    }
     if (g.head_dim != 256 || g.ssm_state_size != 128 || g.ssm_d_conv != 4 || g.n_expert > 512 || m.top_k > 15) {
         err = "a geometry this driver's kernels do not take (head 256, state 128, conv 4, <= 512 experts, top-k <= 15)";
         return false;
