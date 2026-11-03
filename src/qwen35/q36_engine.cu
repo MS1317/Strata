@@ -886,6 +886,9 @@ struct Model {
     bool hybrid = false;                       // not every expert fits in VRAM: slots + the CPU pool
     // Dense GGUF matrices can stay file-backed and be copied to a single GPU staging allocation.
     bool stream_dense = false;
+    // Dense streaming packs each 256-value K/V vector as 256 signed bytes
+    // and one float32 scale (260 bytes vs. 1024 in the original cache).
+    bool kv_q8 = false;
     size_t max_stream_bytes = 0;
     // the packed Q8_0 decode copies (gguf weights, packed copy, bytes): given back when that lets every expert fit
     std::vector<std::tuple<const uint8_t*, uint8_t*, size_t>> packed;
@@ -1040,6 +1043,7 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         constexpr uint64_t reserve = 512ull * 1024 * 1024;
         m.stream_dense = packed > free_vram || free_vram - packed < reserve;
         if (std::getenv("STRATA_Q35_STREAM_DENSE")) m.stream_dense = true;
+        m.kv_q8 = m.stream_dense;
         if (m.stream_dense)
             std::fprintf(stderr, "strata-q36: dense streaming: %.2f GiB packed weights, %.2f GiB free VRAM; "
                                  "GGUF matrices stay mapped on disk until each GPU operation\n",
@@ -1405,12 +1409,17 @@ struct Engine {
     void alloc_session(Sess& ss) const {
         const auto& g = m->g;
         const size_t C = (size_t) g.ssm_conv_channels;
+        const size_t cell_bytes = m->kv_q8 ? (size_t) g.head_dim + sizeof(float) :
+                                                (size_t) g.head_dim * sizeof(float);
+        auto alloc_kv = [&]() -> float* {
+            return reinterpret_cast<float*>(dalloc_t<uint8_t>((size_t) g.n_head_kv * ctx * cell_bytes));
+        };
         for (const Layer& L : m->layers) {
             if (L.attn) {
                 ss.conv.push_back(nullptr);
                 ss.S.push_back(nullptr);
-                ss.kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
-                ss.vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+                ss.kc.push_back(alloc_kv());
+                ss.vc.push_back(alloc_kv());
             } else {
                 ss.conv.push_back(dalloc(C * (g.ssm_d_conv - 1)));
                 ss.S.push_back(dalloc((size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size));
@@ -1421,8 +1430,8 @@ struct Engine {
         if (m->has_mtp) {   // the MTP block's own K / V (an attention layer at index n_layers)
             ss.conv.push_back(nullptr);
             ss.S.push_back(nullptr);
-            ss.kc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
-            ss.vc.push_back(dalloc((size_t) g.n_head_kv * ctx * g.head_dim));
+            ss.kc.push_back(alloc_kv());
+            ss.vc.push_back(alloc_kv());
         }
         ss.hlast = dalloc((size_t) g.n_embd);
     }
@@ -1465,17 +1474,19 @@ struct Engine {
             size_t free_vram = 0, total_vram = 0;
             CK(cudaMemGetInfo(&free_vram, &total_vram));
             const size_t attn_layers = (size_t) g.n_qsa_layers() + (m->has_mtp ? 1 : 0);
-            // The current qwen35 driver still stores full-attention K/V as float32 on the GPU.
-            // Check this cost before cudaMalloc, otherwise Windows may silently spill VRAM
-            // into system RAM and make unrelated desktop processes unresponsive.
+            // Quantized K/V is enabled for dense streaming only; MoE retains FP32.
+            // Check costs before allocations to protect other Windows processes.
+            const uint64_t cell_bytes = m->kv_q8 ? (uint64_t) g.head_dim + sizeof(float) :
+                                                     (uint64_t) g.head_dim * sizeof(float);
             const uint64_t kv_bytes = (uint64_t) attn_layers * (uint64_t) g.n_head_kv *
-                                      (uint64_t) ctx * (uint64_t) g.head_dim * 2ull * sizeof(float);
+                                      (uint64_t) ctx * cell_bytes * 2ull;
             const uint64_t stream_bytes = (uint64_t) m->max_stream_bytes;
             constexpr uint64_t scratch_reserve = 768ull * 1024 * 1024;
             const uint64_t required = kv_bytes + stream_bytes + scratch_reserve;
-            std::fprintf(stderr, "strata-q36: memory preflight ctx=%d: FP32 K/V %.2f GiB, staging %.2f GiB, "
+            std::fprintf(stderr, "strata-q36: memory preflight ctx=%d: %s K/V %.2f GiB, staging %.2f GiB, "
                                  "scratch allowance %.2f GiB, free GPU %.2f GiB\n",
-                         ctx, (double) kv_bytes / (1ull << 30), (double) stream_bytes / (1ull << 30),
+                         ctx, m->kv_q8 ? "Q8" : "FP32", (double) kv_bytes / (1ull << 30),
+                         (double) stream_bytes / (1ull << 30),
                          (double) scratch_reserve / (1ull << 30), (double) free_vram / (1ull << 30));
             if (required > free_vram) {
                 std::fprintf(stderr, "strata-q36: refusing GPU allocation: required minimum %.2f GiB > "
@@ -1621,7 +1632,9 @@ struct Engine {
             // the MTP block, and its recurrent state)
             size_t n_attn = m->has_mtp ? 1 : 0, n_gdn = 0;
             for (const Layer& L : m->layers) (L.attn ? n_attn : n_gdn) += 1;
-            const size_t per = (size_t) (g.n_head_kv * g.head_dim * 2 * 4) * (size_t) ctx * n_attn +
+            const size_t cell_bytes = m->kv_q8 ? (size_t) g.head_dim + sizeof(float) :
+                                                    (size_t) g.head_dim * sizeof(float);
+            const size_t per = (size_t) g.n_head_kv * cell_bytes * 2 * (size_t) ctx * n_attn +
                                (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4 * n_gdn;
             size_t fr0 = 0, tot0 = 0;
             CK(cudaMemGetInfo(&fr0, &tot0));
@@ -2868,7 +2881,9 @@ struct Engine {
         const Sess& a = sess[(size_t) src];
         Sess& b = sess[(size_t) dst];
         const size_t C = (size_t) g.ssm_conv_channels;
-        const size_t row = (size_t) ctx * g.head_dim * 4;
+        const size_t cell_bytes = m->kv_q8 ? (size_t) g.head_dim + sizeof(float) :
+                                                (size_t) g.head_dim * sizeof(float);
+        const size_t row = (size_t) ctx * cell_bytes;
         for (size_t l = 0; l < a.conv.size(); ++l) {
             if (a.conv[l]) {
                 CK(cudaMemcpyAsync(b.conv[l], a.conv[l], C * (g.ssm_d_conv - 1) * 4, cudaMemcpyDeviceToDevice, st));
@@ -2876,9 +2891,9 @@ struct Engine {
                                    cudaMemcpyDeviceToDevice, st));
             }
             if (a.kc[l] && a.pos > 0) {
-                CK(cudaMemcpy2DAsync(b.kc[l], row, a.kc[l], row, (size_t) a.pos * g.head_dim * 4, (size_t) g.n_head_kv,
+                CK(cudaMemcpy2DAsync(b.kc[l], row, a.kc[l], row, (size_t) a.pos * cell_bytes, (size_t) g.n_head_kv,
                                      cudaMemcpyDeviceToDevice, st));
-                CK(cudaMemcpy2DAsync(b.vc[l], row, a.vc[l], row, (size_t) a.pos * g.head_dim * 4, (size_t) g.n_head_kv,
+                CK(cudaMemcpy2DAsync(b.vc[l], row, a.vc[l], row, (size_t) a.pos * cell_bytes, (size_t) g.n_head_kv,
                                      cudaMemcpyDeviceToDevice, st));
             }
         }
