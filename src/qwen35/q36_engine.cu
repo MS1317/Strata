@@ -19,6 +19,7 @@
 #include "strata/artifact/dequant.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
+#include "strata/core/qwen35_dense_staging.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -1136,7 +1137,8 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             // A large output vocabulary can exceed 500 MB. It will be
             // evaluated in bounded row tiles, not copied in one shot.
             const size_t stage_bytes = name == "output.weight"
-                ? std::min(w.bytes, row_bytes(w.type, w.n_in) * (size_t) kDenseHeadTileRows)
+                ? strata::core::qwen35_head_tile_bytes((size_t) w.n_out, row_bytes(w.type, w.n_in),
+                                                       (size_t) kDenseHeadTileRows)
                 : w.bytes;
             m.max_stream_bytes = std::max(m.max_stream_bytes, stage_bytes);
             return w;
@@ -1269,7 +1271,8 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             m.head.n_out = (int) t->shape[1];
             if (m.embd_host)
                 m.max_stream_bytes = std::max(m.max_stream_bytes,
-                    std::min((size_t) nb, row_bytes(m.head.type, m.head.n_in) * (size_t) kDenseHeadTileRows));
+                    strata::core::qwen35_head_tile_bytes((size_t) m.head.n_out,
+                        row_bytes(m.head.type, m.head.n_in), (size_t) kDenseHeadTileRows));
         }
     }
     std::fprintf(stderr, "strata-q36: %s: %zu tensors (layout checked), %.2f GiB on the GPU in %.1f s (the routed "
@@ -1830,12 +1833,11 @@ struct Engine {
         CK(cudaMemcpyAsync(host_token_ids.data(), token_ids, (size_t) T * sizeof(int32_t),
                            cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
-        for (int i = 0; i < T; ++i) {
-            int32_t id = host_token_ids[(size_t) i];
-            // An image-pad row is overwritten by k_put_rows after this function.
-            if (id < 0 || id >= m->g.n_vocab) id = 0;
-            std::memcpy(host_embed_rows.data() + (size_t) i * m->embd_row,
-                        m->embd_host + (size_t) id * m->embd_row, m->embd_row);
+        if (!strata::core::qwen35_gather_embedding_rows(
+                m->embd_host, (size_t) m->g.n_vocab, m->embd_row,
+                host_token_ids.data(), (size_t) T, host_embed_rows.data())) {
+            std::fprintf(stderr, "strata-q36: invalid embedding staging source\n");
+            std::exit(1);
         }
         CK(cudaMemcpyAsync(embed_stage, host_embed_rows.data(), (size_t) T * m->embd_row,
                            cudaMemcpyHostToDevice, st));
@@ -2451,7 +2453,8 @@ struct Engine {
             const Mat& hd = m->head;
             const size_t row = row_bytes(hd.type, hd.n_in);
             if (n > kVerify || !head_tile_logits || !row ||
-                row * (size_t) std::min(kDenseHeadTileRows, hd.n_out) > dense_stage_capacity) {
+                strata::core::qwen35_head_tile_bytes((size_t) hd.n_out, row,
+                                                    (size_t) kDenseHeadTileRows) > dense_stage_capacity) {
                 std::fprintf(stderr, "strata-q36: streamed head staging configuration invalid\n");
                 std::exit(1);
             }
