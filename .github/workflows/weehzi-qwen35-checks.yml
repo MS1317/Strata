@@ -5,6 +5,8 @@ on:
       - feat/qwen35-9b-long-context
     paths:
       - 'tests/core/model_family_test.cpp'
+      - 'tests/core/qwen35_kv_q8_test.cpp'
+      - 'CMakeLists.txt'
       - 'include/strata/artifact/**'
       - 'include/strata/core/**'
       - '.github/workflows/weehzi-qwen35-checks.yml'
@@ -20,6 +22,7 @@ jobs:
       - name: Configure CPU-only unit-test build
         run: cmake -S . -B build-weehzi -DSTRATA_BUILD_TESTS=ON -DSTRATA_ENABLE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release
       - name: Build model-family test
-        run: cmake --build build-weehzi --target model_family_test --parallel 2
+        run: cmake --build build-weehzi --target model_family_test qwen35_kv_q8_test --parallel 2
       - name: Run model-family test
-        run: ctest --test-dir build-weehzi -R '^model_family_test$' --output-on-failure
+        run: ctest --test-dir build-weehzi -R '^(model_family_test|qwen35_kv_q8_test)
+ --output-on-failure
