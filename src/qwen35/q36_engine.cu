@@ -1555,8 +1555,10 @@ struct Engine {
             // context even though the permanent cache is quantized. Budget them too.
             const uint64_t fp16_kv_scratch = 2ull * (uint64_t) g.n_head_kv *
                 (uint64_t) ctx * (uint64_t) g.head_dim * sizeof(__half);
+            // Split-K decode/verify runs only for T <= 8; longer prompts
+            // use the separate FP16 GEMM path, so budget just eight rows.
             const uint64_t partial_rows = (uint64_t) g.n_head *
-                                          (uint64_t) std::min(tmax, 64);
+                                          (uint64_t) std::min(tmax, 8);
             const uint64_t partial_chunks = ((uint64_t) ctx + kChunkCells - 1) / kChunkCells;
             const uint64_t attention_partials = partial_rows * partial_chunks *
                                                 (uint64_t) g.head_dim * sizeof(float);
@@ -1699,7 +1701,9 @@ struct Engine {
         ami = dalloc_t<int32_t>((size_t) kArgBlocks * kVerify);
         CK(cudaHostAlloc((void**) &hpin, 64 * sizeof(int32_t), cudaHostAllocDefault));
         n_chunk = (ctx + kChunkCells - 1) / kChunkCells;
-        att_rows = (int) (g.n_head * std::min<int64_t>((int64_t) T, 64));   // 64 query tokens per attention batch
+        // Split-K is used only for decode and verify (at most eight rows).
+        // Prompt chunks above eight tokens use the FP16 GEMM route instead.
+        att_rows = (int) (g.n_head * std::min<int64_t>((int64_t) T, 8));
         pacc = dalloc((size_t) att_rows * n_chunk * g.head_dim);
         pm = dalloc((size_t) att_rows * n_chunk);
         pl = dalloc((size_t) att_rows * n_chunk);
