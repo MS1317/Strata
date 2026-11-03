@@ -1107,10 +1107,9 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     };
     auto L = [](int64_t l, const char* s) { return "blk." + std::to_string(l) + "." + s; };
     m.layers.resize((size_t) g.n_layers);
-    // the MTP block whenever the file has one, with or without drafts (--mtp): the VRAM it takes is then the same
-    // either way, so the hybrid mode's slot tables - and with them the greedy text - do not depend on --mtp
-    (void) want_mtp;
-    m.has_mtp = g.n_mtp_layers > 0;
+    // A memory-limited dense model skips optional MTP drafting unless explicitly requested.
+    // Large-model startup should not allocate a separate speculative layer needlessly.
+    m.has_mtp = g.n_mtp_layers > 0 && (!m.stream_dense || want_mtp);
     for (int64_t l = 0; l < g.n_layers + (m.has_mtp ? 1 : 0); ++l) {
         const bool is_mtp = l == g.n_layers;
         Layer& y = is_mtp ? m.mtp : m.layers[(size_t) l];
@@ -1462,6 +1461,30 @@ struct Engine {
         const bool dense = strata::model_family_dense_ffn(g.family);
         const size_t T = (size_t) tmax, N = (size_t) g.n_embd, Kp = (size_t) m->top_k, FF = (size_t) g.n_ff;
         const size_t C = (size_t) g.ssm_conv_channels;
+        if (m->stream_dense) {
+            size_t free_vram = 0, total_vram = 0;
+            CK(cudaMemGetInfo(&free_vram, &total_vram));
+            const size_t attn_layers = (size_t) g.n_qsa_layers() + (m->has_mtp ? 1 : 0);
+            // The current qwen35 driver still stores full-attention K/V as float32 on the GPU.
+            // Check this cost before cudaMalloc, otherwise Windows may silently spill VRAM
+            // into system RAM and make unrelated desktop processes unresponsive.
+            const uint64_t kv_bytes = (uint64_t) attn_layers * (uint64_t) g.n_head_kv *
+                                      (uint64_t) ctx * (uint64_t) g.head_dim * 2ull * sizeof(float);
+            const uint64_t stream_bytes = (uint64_t) m->max_stream_bytes;
+            constexpr uint64_t scratch_reserve = 768ull * 1024 * 1024;
+            const uint64_t required = kv_bytes + stream_bytes + scratch_reserve;
+            std::fprintf(stderr, "strata-q36: memory preflight ctx=%d: FP32 K/V %.2f GiB, staging %.2f GiB, "
+                                 "scratch allowance %.2f GiB, free GPU %.2f GiB\n",
+                         ctx, (double) kv_bytes / (1ull << 30), (double) stream_bytes / (1ull << 30),
+                         (double) scratch_reserve / (1ull << 30), (double) free_vram / (1ull << 30));
+            if (required > free_vram) {
+                std::fprintf(stderr, "strata-q36: refusing GPU allocation: required minimum %.2f GiB > "
+                                     "%.2f GiB free. Reduce context or implement quantized/host K/V; "
+                                     "Windows GPU memory fallback is not safe for this workload.\n",
+                             (double) required / (1ull << 30), (double) free_vram / (1ull << 30));
+                std::exit(1);
+            }
+        }
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
         if (m->stream_dense) {
             use_graph = false;
