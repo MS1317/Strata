@@ -848,7 +848,9 @@ __global__ void __launch_bounds__(128) k_gdn_norm(const float* o_raw, const floa
 
 // ------------------------------------------------------------------------------------------------ the model
 struct Mat {
-    const uint8_t* d = nullptr;   // device, GGUF blocks
+    const uint8_t* d = nullptr;   // device, GGUF blocks when resident
+    const uint8_t* host = nullptr;  // GGUF mmap source for a streamed dense matrix
+    size_t bytes = 0;            // size of the streamed GGUF tensor in bytes
     int type = -1;
     int n_in = 0, n_out = 0;
 };
@@ -882,6 +884,9 @@ struct Model {
     strata::core::ModelGeometry g;
     std::shared_ptr<strata::GgufModel> file;   // kept mapped: the experts are placed after the engine's buffers
     bool hybrid = false;                       // not every expert fits in VRAM: slots + the CPU pool
+    // Dense GGUF matrices can stay file-backed and be copied to a single GPU staging allocation.
+    bool stream_dense = false;
+    size_t max_stream_bytes = 0;
     // the packed Q8_0 decode copies (gguf weights, packed copy, bytes): given back when that lets every expert fit
     std::vector<std::tuple<const uint8_t*, uint8_t*, size_t>> packed;
     // the GGUF-native MTP block (blk.<n_layers>, loaded with --mtp): eh_proj over [enorm(e) | hnorm(h)], then an
@@ -1019,7 +1024,9 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     size_t checked = 0;
     if (!strata::core::check_gguf_layout(gm, m.g, err, &checked)) return false;
     const auto& g = m.g;
-    // Dense weights must fit in VRAM until CPU staging is implemented.
+    // Auto-select bounded matrix streaming when resident dense weights cannot fit VRAM.
+    // This stages one matrix at a time from the memory-mapped GGUF, not a second model copy
+    // in host RAM. CUDA graph capture must be disabled for this dynamic staging path.
     if (strata::model_family_dense_ffn(g.family)) {
         uint64_t packed = 0;
         for (const auto& w : strata::core::global_tensors(g))
@@ -1030,14 +1037,13 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
                     packed += strata::tensor_payload_bytes(*t);
         size_t free_vram = 0, total_vram = 0;
         CK(cudaMemGetInfo(&free_vram, &total_vram));
-        constexpr size_t reserve = 512ull * 1024 * 1024;
-        if (packed > free_vram || free_vram - packed < reserve) {
-            err = "dense qwen35 needs at least " +
-                  std::to_string((packed + reserve) / (1024 * 1024)) +
-                  " MiB VRAM; only " + std::to_string(free_vram / (1024 * 1024)) +
-                  " MiB free. CPU/RAM weight staging not yet implemented.";
-            return false;
-        }
+        constexpr uint64_t reserve = 512ull * 1024 * 1024;
+        m.stream_dense = packed > free_vram || free_vram - packed < reserve;
+        if (std::getenv("STRATA_Q35_STREAM_DENSE")) m.stream_dense = true;
+        if (m.stream_dense)
+            std::fprintf(stderr, "strata-q36: dense streaming: %.2f GiB packed weights, %.2f GiB free VRAM; "
+                                 "GGUF matrices stay mapped on disk until each GPU operation\n",
+                         (double) packed / (1ull << 30), (double) free_vram / (1ull << 30));
     }
     if (g.head_dim != 256 || g.ssm_state_size != 128 || g.ssm_d_conv != 4 || g.n_expert > 512 || m.top_k > 15) {
         err = "a geometry this driver's kernels do not take (head 256, state 128, conv 4, <= 512 experts, top-k <= 15)";
@@ -1074,6 +1080,12 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             std::exit(1);
         }
         const uint64_t nb = strata::tensor_payload_bytes(*t);
+        if (m.stream_dense) {
+            w.host = gm.shard(s).tensor_data(*t);
+            w.bytes = (size_t) nb;
+            m.max_stream_bytes = std::max(m.max_stream_bytes, w.bytes);
+            return w;
+        }
         uint8_t* d = nullptr;
         CK(cudaMalloc(&d, nb));
         CK(cudaMemcpy(d, gm.shard(s).tensor_data(*t), nb, cudaMemcpyHostToDevice));
@@ -1289,6 +1301,10 @@ struct Engine {
     float *mq_gu = nullptr, *mq_h = nullptr;
     __half* x16 = nullptr;
     bool use_graph = true;
+    // One bounded GPU buffer for the current dense GGUF matrix. All consumers share st,
+    // so a queued copy cannot overwrite weights while an earlier kernel reads them.
+    uint8_t* dense_stage = nullptr;
+    size_t dense_stage_capacity = 0;
     int mtp_d = 0;   // MTP drafts per speculative step (0: none; greedy requests only)
 
     // ---- sessions: the conversation states.  One for a single-request engine; --batch N keeps N, each with its own
@@ -1447,6 +1463,17 @@ struct Engine {
         const size_t T = (size_t) tmax, N = (size_t) g.n_embd, Kp = (size_t) m->top_k, FF = (size_t) g.n_ff;
         const size_t C = (size_t) g.ssm_conv_channels;
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+        if (m->stream_dense) {
+            use_graph = false;
+            dense_stage_capacity = m->max_stream_bytes;
+            if (!dense_stage_capacity) {
+                std::fprintf(stderr, "strata-q36: no dense matrices to stage\n");
+                std::exit(1);
+            }
+            CK(cudaMalloc(&dense_stage, dense_stage_capacity));
+            std::fprintf(stderr, "strata-q36: dense staging budget %.1f MiB (one matrix at a time; no CUDA graphs)\n",
+                         (double) dense_stage_capacity / (1 << 20));
+        }
         x = dalloc(T * N); h = dalloc(T * N); y = dalloc(T * N); hmain = dalloc(T * N);
         qkv = dalloc(T * C); hc = dalloc(T * C); z = dalloc(T * g.ssm_value_dim);
         alpha = dalloc(T * g.ssm_v_heads); beta = dalloc(T * g.ssm_v_heads); gdn_y = dalloc(T * g.ssm_value_dim);
@@ -1516,7 +1543,7 @@ struct Engine {
             CK(cudaMemGetInfo(&fr0, &tot0));
             // a dense family on a small card: the prompt GEMM's scratch (45 MB dequant + workspace) does not fit beside
             // the weights, and a failed attempt leaves its allocation behind - so it is not attempted
-            if (strata::model_family_dense_ffn(g.family) && fr0 < ((size_t) 640 << 20)) {
+            if (m->stream_dense || (dense && fr0 < ((size_t) 640 << 20))) {
                 gemm_ready = false;
                 std::fprintf(stderr, "strata-q36: prompt GEMM off (%.0f MiB free): a prompt chunk reads its projections "
                              "on the native MMVQ in 8-column steps (slower, no extra VRAM)\n", (double) fr0 / (1 << 20));
@@ -1644,6 +1671,22 @@ struct Engine {
         set_delta(0);
     }
 
+    // Resolve a file-backed dense matrix just before the GPU operation that needs it.
+    // Every copy and its consumer run on st, with strict stream ordering. Do not
+    // enable token graphs until staging lifetime is explicitly represented in them.
+    Mat gpu_mat(const Mat& w) {
+        if (!w.host) return w;
+        if (!dense_stage || w.bytes > dense_stage_capacity) {
+            std::fprintf(stderr, "strata-q36: matrix staging buffer too small\n");
+            std::exit(1);
+        }
+        CK(cudaMemcpyAsync(dense_stage, w.host, w.bytes, cudaMemcpyHostToDevice, st));
+        Mat staged = w;
+        staged.d = dense_stage;
+        staged.host = nullptr;
+        return staged;
+    }
+
     /// y [T][n_out] = W x [T][n_in] on the native MMVQ, 8 columns per launch.
     void mm(const Mat& w, const float* xin, float* out, int T) {
         prep(xin, w.n_in, T, q8);
@@ -1690,8 +1733,10 @@ struct Engine {
         else quant(xin, n, T, q);
     }
     void apply(const Mat& w, const void* q, float* out, int T) {
-        if (T > kGemmT && gemm_ready) gemm.native((const uint16_t*) x16, w.type, w.d, out, T, w.n_out, w.n_in);
-        else mmq(w, q, out, T);
+        if (T > kGemmT && gemm_ready) {
+            const Mat staged = gpu_mat(w);
+            gemm.native((const uint16_t*) x16, staged.type, staged.d, out, T, staged.n_out, staged.n_in);
+        } else mmq(w, q, out, T);
     }
     /// x [T][n] -> its q8_1 image (T contiguous columns: one vector of T * n), for every matrix that reads x.
     void quant(const float* xin, int n, int T, void* q) { K::native_quantize_q8_1(xin, q, n * T, 1, st); }
@@ -1822,7 +1867,7 @@ struct Engine {
     bool shared_gu(const Layer& L, int T) {
         const int FS = (int) m->g.n_ff_shexp;
         const Mat &a = L.sh_gate, &b = L.sh_up;
-        if (!fast_k || T < 1 || T > 4 || a.type != 8 || b.type != 8 || a.n_in != b.n_in || a.n_out != FS || b.n_out != FS ||
+        if (a.host || b.host || !fast_k || T < 1 || T > 4 || a.type != 8 || b.type != 8 || a.n_in != b.n_in || a.n_out != FS || b.n_out != FS ||
             a.n_in % 32 != 0 || a.n_in / 32 > 64 || a.n_in / 32 <= 32 || FS % 32 != 0 ||
             (K::native_q8_0_packed_eligible(a.n_in, a.n_out) && K::native_q8_0_packed_enabled()))
             return false;
@@ -1988,12 +2033,13 @@ struct Engine {
     }
     /// y [T][n_out] = W x from x's q8_1 image, 8 columns per launch.
     void mmq(const Mat& w, const void* q, float* out, int T) {
-        if (q8_small(w, q, out, T)) return;
-        const size_t qb = K::native_q8_1_bytes(w.n_in, 1);
+        const Mat staged = gpu_mat(w);
+        if (q8_small(staged, q, out, T)) return;
+        const size_t qb = K::native_q8_1_bytes(staged.n_in, 1);
         for (int c0 = 0; c0 < T; c0 += 8) {
             const int nc = std::min(8, T - c0);
-            K::native_mmvq(w.type, w.d, (const char*) q + (size_t) c0 * qb, out + (size_t) c0 * w.n_out, w.n_in,
-                           w.n_out, nc, st);
+            K::native_mmvq(staged.type, staged.d, (const char*) q + (size_t) c0 * qb,
+                           out + (size_t) c0 * staged.n_out, staged.n_in, staged.n_out, nc, st);
         }
     }
 
@@ -2256,7 +2302,7 @@ struct Engine {
         const auto& g = m->g;
         const int N = (int) g.n_embd;
         const Mat& hd = m->head;
-        if (!fast_k || draft_n <= 0 || draft_n >= g.n_vocab || draft_n % 8 != 0 || hd.type != 8 || hd.n_in != N || N / 32 != 64) {
+        if (hd.host || !fast_k || draft_n <= 0 || draft_n >= g.n_vocab || draft_n % 8 != 0 || hd.type != 8 || hd.n_in != N || N / 32 != 64) {
             head_rows(hn, 1, logits_m, pick_m);
             return;
         }
@@ -3949,7 +3995,7 @@ int strata::qwen35::run(int argc, char** argv) {
         return 1;
     }
     Engine E;
-    E.use_graph = graph;
+    E.use_graph = graph && !m.stream_dense;
     if (chunk == 0) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
