@@ -1545,20 +1545,31 @@ struct Engine {
             // Check costs before allocations to protect other Windows processes.
             const uint64_t cell_bytes = m->kv_q8 ? (uint64_t) g.head_dim + sizeof(float) :
                                                      (uint64_t) g.head_dim * sizeof(float);
-            const uint64_t kv_bytes = (uint64_t) attn_layers * (uint64_t) g.n_head_kv *
-                                      (uint64_t) ctx * cell_bytes * 2ull;
+            const uint64_t kv_bytes = (uint64_t) n_sess * (uint64_t) attn_layers *
+                                      (uint64_t) g.n_head_kv * (uint64_t) ctx * cell_bytes * 2ull;
             const uint64_t stream_bytes = (uint64_t) m->max_stream_bytes;
-            constexpr uint64_t scratch_reserve = 768ull * 1024 * 1024;
-            const uint64_t required = kv_bytes + stream_bytes + scratch_reserve;
-            std::fprintf(stderr, "strata-q36: memory preflight ctx=%d: %s K/V %.2f GiB, staging %.2f GiB, "
-                                 "scratch allowance %.2f GiB, free GPU %.2f GiB\n",
-                         ctx, m->kv_q8 ? "Q8" : "FP32", (double) kv_bytes / (1ull << 30),
-                         (double) stream_bytes / (1ull << 30),
-                         (double) scratch_reserve / (1ull << 30), (double) free_vram / (1ull << 30));
+            // These FP16 conversion buffers and attention-score partials grow with
+            // context even though the permanent cache is quantized. Budget them too.
+            const uint64_t fp16_kv_scratch = 2ull * (uint64_t) g.n_head_kv *
+                (uint64_t) ctx * (uint64_t) g.head_dim * sizeof(__half);
+            const uint64_t partial_rows = (uint64_t) g.n_head *
+                                          (uint64_t) std::min(tmax, 64);
+            const uint64_t partial_chunks = ((uint64_t) ctx + kChunkCells - 1) / kChunkCells;
+            const uint64_t attention_partials = partial_rows * partial_chunks *
+                                                (uint64_t) g.head_dim * sizeof(float);
+            constexpr uint64_t fixed_buffers = 512ull * 1024 * 1024;
+            constexpr uint64_t safety_headroom = 256ull * 1024 * 1024;
+            const uint64_t other_budget = fixed_buffers + safety_headroom +
+                                          fp16_kv_scratch + attention_partials;
+            const uint64_t required = kv_bytes + stream_bytes + other_budget;
+            std::fprintf(stderr, "strata-q36: memory preflight ctx=%d sessions=%d: %s K/V %.2f GiB, "
+                                 "staging %.2f GiB, buffers + safety %.2f GiB, free GPU %.2f GiB\n",
+                         ctx, n_sess, m->kv_q8 ? "Q8" : "FP32",
+                         (double) kv_bytes / (1ull << 30), (double) stream_bytes / (1ull << 30),
+                         (double) other_budget / (1ull << 30), (double) free_vram / (1ull << 30));
             if (required > free_vram) {
-                std::fprintf(stderr, "strata-q36: refusing GPU allocation: required minimum %.2f GiB > "
-                                     "%.2f GiB free. Reduce context or implement quantized/host K/V; "
-                                     "Windows GPU memory fallback is not safe for this workload.\n",
+                std::fprintf(stderr, "strata-q36: refusing GPU allocation: estimated safe budget %.2f GiB > "
+                                     "%.2f GiB free. Use a shorter context or free VRAM without disrupting work.\n",
                              (double) required / (1ull << 30), (double) free_vram / (1ull << 30));
                 std::exit(1);
             }
@@ -2439,7 +2450,8 @@ struct Engine {
         if (m->head.host) {
             const Mat& hd = m->head;
             const size_t row = row_bytes(hd.type, hd.n_in);
-            if (n > kVerify || !head_tile_logits || !row || row * kDenseHeadTileRows > dense_stage_capacity) {
+            if (n > kVerify || !head_tile_logits || !row ||
+                row * (size_t) std::min(kDenseHeadTileRows, hd.n_out) > dense_stage_capacity) {
                 std::fprintf(stderr, "strata-q36: streamed head staging configuration invalid\n");
                 std::exit(1);
             }
