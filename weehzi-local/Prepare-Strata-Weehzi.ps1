@@ -15,6 +15,9 @@ $logDir = Join-Path $data 'logs'
 $log = Join-Path $logDir 'strata-q36.log'
 
 if (!(Test-Path -LiteralPath $model)) {
+    & (Join-Path $PSScriptRoot 'Finalize-Model-Download.ps1')
+}
+if (!(Test-Path -LiteralPath $model)) {
     throw "Model is not downloaded and verified: $model"
 }
 if (!(Test-Path -LiteralPath $engine)) {
