@@ -37,7 +37,7 @@ function Run-Variant([string]$name, [string]$exe) {
     $out = Join-Path $logs "$name.stdout.txt"
     $err = Join-Path $logs "$name.stderr.txt"
     Remove-Item -LiteralPath $out,$err -Force -ErrorAction SilentlyContinue
-    Write-Host "Testing $name: $Tokens tokens, ctx 4096..."
+    Write-Host "Testing ${name}: $Tokens tokens, ctx 4096..."
     $process = Start-Process -FilePath $exe -ArgumentList @(
         '--native', $model, '--max-context', '4096', '--chunk', '128',
         '--no-graph', '--tokens', '198', '--n', [string]$Tokens
