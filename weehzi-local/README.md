@@ -7,7 +7,7 @@ This setup is **personal and experimental**. It lives separately from Weehzi.
 - Repository: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi`
 - Model: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi-data\models\Qwen3.5-9B-Q4_K_M.gguf`
 - Original working Windows executable: `weehzi-local\bin\strata-q36.exe`
-- Opt-in adaptive GPU-first executable: `weehzi-local\bin\strata-q36-gpu-first.exe` (installed separately after CI succeeds)
+- Opt-in adaptive GPU-first executable: `weehzi-local\bin\strata-q36-gpu-first.exe` (installed separately on this PC)
 - Virtual Python: `.venv\Scripts\python.exe`
 - API configuration: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi-data\strata-weehzi.json`
 - Engine/server log: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi-data\logs\strata-q36.log`
@@ -29,7 +29,7 @@ The launcher **refuses to start** if there is less than 7 GiB available RAM or l
 
 All three agreed decisions (give memory back to other apps, speed before 64K, automatic memory budgets) are implemented in the experimental engine. The original launcher and binary are preserved.
 
-**Read [GPU-FIRST-STATUS.md](GPU-FIRST-STATUS.md) before switching versions.** The new `Run-Strata-Weehzi-GPU-First.cmd` is a separate, opt-in launcher. Its Windows binary must be built and installed using `Install-GPU-First.ps1`. It will never automatically replace the current executable or restart the server.
+**Read [GPU-FIRST-STATUS.md](GPU-FIRST-STATUS.md) before switching versions.** The new `Run-Strata-Weehzi-GPU-First.cmd` is a separate, opt-in launcher. Its Windows binary has now been built and installed. `Install-Strata-Weehzi-GPU-First.cmd` is available to retry the installation if needed. It will never automatically replace the current executable or restart the server.
 
 ## Connect Weehzi after successful inference testing
 
@@ -44,7 +44,7 @@ Do **not** switch Weehzi's primary provider until this fork completes real-model
 
 - Host-specific Python venv and dependencies: installed
 - Original Windows engine: installed and verified to launch
-- GPU-first upgrade: separate source changes committed; host-compiled tests passed, real speed gain still unverified
+- GPU-first upgrade: successful Windows build and on-PC executable startup check; **actual model correctness/speed still unverified**
 - Model: downloaded, SHA256 verified and tokenizer extracted
 - Basic real Qwen3.5-9B inference: confirmed on the original engine; previously around 0.6–1.4 tokens/sec
 - 32K / 64K: engineering targets, not guaranteed running configurations
