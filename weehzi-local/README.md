@@ -44,7 +44,7 @@ Do **not** switch Weehzi's primary provider until this fork completes real-model
 
 - Host-specific Python venv and dependencies: installed
 - Original Windows engine: installed and verified to launch
-- GPU-first upgrade: successful Windows build and on-PC executable startup check; **actual model correctness/speed still unverified**
+- GPU-first upgrade: successfully built, installed, launched and matched the original engine's 8-token output. Its measured small-test generation speed improved from 1.3 to 2.0 tokens/sec; **full real-chat and Weehzi tool tests are still pending**
 - Model: downloaded, SHA256 verified and tokenizer extracted
 - Basic real Qwen3.5-9B inference: confirmed on the original engine; previously around 0.6–1.4 tokens/sec
 - 32K / 64K: engineering targets, not guaranteed running configurations
