@@ -73,6 +73,6 @@ if (!(Test-Path -LiteralPath $exe)) {
     throw 'Verified archive contained no strata-q36.exe. No binary installed.'
 }
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $extract '*') -Destination $bin -Force -ErrorAction Stop
+Copy-Item -Path (Join-Path $extract '*') -Destination $bin -Force -ErrorAction Stop
 Write-Host "Strata binary is installed: $(Join-Path $bin 'strata-q36.exe')" -ForegroundColor Green
 Write-Host 'The model has NOT been started. Use Run-Strata-Weehzi.cmd for a guarded smoke test.'
