@@ -3,7 +3,8 @@
 param(
     [ValidateSet(2048, 4096, 8192, 16384, 32768, 65536)]
     [int]$Context = 4096,
-    [switch]$GpuFirst
+    [switch]$GpuFirst,
+    [switch]$HeadFast
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -31,10 +32,10 @@ $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Sil
 if ($listener) { throw "Local port $port is already in use. Refusing to interrupt the existing service." }
 
 Write-Host "Available: $freeRam MiB RAM, $freeVram MiB VRAM. Preparing $Context token context..."
-& (Join-Path $PSScriptRoot 'Prepare-Strata-Weehzi.ps1') -Context $Context -GpuFirst:$GpuFirst
+& (Join-Path $PSScriptRoot 'Prepare-Strata-Weehzi.ps1') -Context $Context -GpuFirst:$GpuFirst -HeadFast:$HeadFast
 if ($LASTEXITCODE -ne 0) { throw 'Setup failed' }
 $config = Join-Path $data 'strata-weehzi.json'
-if ($GpuFirst) {
+if ($GpuFirst -or $HeadFast) {
     # Adaptive model-weight caching. These set maximums, not a demand to fill VRAM.
     # The engine continuously preserves its free-VRAM reserve and can give weights back.
     if (-not $env:STRATA_Q35_GPU_CACHE_MB) { $env:STRATA_Q35_GPU_CACHE_MB = '2048' }
