@@ -1,62 +1,49 @@
-# Run experimental Strata / Qwen3.5 9B on this PC
+# Strata-Weehzi — Qwen3.5 4B (current local model)
 
-This setup is **personal and experimental**. It lives separately from Weehzi.
+This personal Windows experiment uses **Qwen3.5 4B Q4_K_M** on the GTX 1650. It replaces the previous 9B default because the 9B version spent too much time moving weights between memory and GPU.
 
-## Files
+## Main files
 
 - Repository: `C:\Users\<WindowsUser>\Desktop\Dev\AI\Strata-Weehzi`
-- Model: `C:\Users\<WindowsUser>\Desktop\Dev\AI\Strata-Weehzi-data\models\Qwen3.5-9B-Q4_K_M.gguf`
-- Original working Windows executable: `weehzi-local\bin\strata-q36.exe`
-- Opt-in adaptive GPU-first executable: `weehzi-local\bin\strata-q36-gpu-first.exe` (installed separately on this PC)
-- Virtual Python: `.venv\Scripts\python.exe`
-- API configuration: `C:\Users\<WindowsUser>\Desktop\Dev\AI\Strata-Weehzi-data\strata-weehzi.json`
-- Engine/server log: `C:\Users\<WindowsUser>\Desktop\Dev\AI\Strata-Weehzi-data\logs\strata-q36.log`
+- **Current model**: `..\Strata-Weehzi-data\models\Qwen3.5-4B-Q4_K_M.gguf`
+- New tokenizer: `..\Strata-Weehzi-data\qwen35-4b\tokenizer`
+- Original executable: `weehzi-local\bin\strata-q36.exe`
+- **Recommended GPU-first executable**: `weehzi-local\bin\strata-q36-gpu-first.exe`
+- Optional output-head experiment: `weehzi-local\bin\strata-q36-head-fast.exe`
+- Isolated Python: `.venv\Scripts\python.exe`
+- Local API settings: `..\Strata-Weehzi-data\strata-weehzi.json`
 
-**Qwen3.5 GGUF**: `unsloth/Qwen3.5-9B-GGUF`, Q4_K_M, exact SHA256 `03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8`.
+Download source: `unsloth/Qwen3.5-4B-GGUF`, file `Qwen3.5-4B-Q4_K_M.gguf`, size **2,740,937,888 bytes**, official SHA-256 `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4`.
 
-## Start and stop
+## Start the new 4B model
 
-1. Double-click `Run-Strata-Weehzi.cmd` at the repository root.
-2. The first run verifies the already-downloaded model, extracts its tokenizer and prepares the local server settings. It starts with **4,096 context tokens**.
-3. Leave the terminal open. Use `Check-Strata-Weehzi.cmd` in another window to check whether the server responds.
-4. Press **Ctrl+C** in the **Strata terminal only** to shut it down. Do not close other applications.
+1. If still downloading, check progress with `Get-BitsTransfer -Name 'Strata-Weehzi Qwen3.5 4B'`.
+2. Once the download says **Transferred**, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\weehzi-local\Finalize-Model-Download.ps1`. This verifies the checksum before the GGUF can be used.
+3. Run **`Run-Strata-Weehzi-GPU-First.cmd`** in the repository directory. It checks free memory before starting and forces bounded GPU weight staging to avoid accidental VRAM exhaustion. The first target remains **4K context**.
+4. Open `http://127.0.0.1:18084/` for chat. To check status: `Check-Strata-Weehzi.cmd`.
+5. To stop: **Ctrl+C inside the Strata terminal only**.
 
-Advanced: from Command Prompt in the repository, `Run-Strata-Weehzi.cmd -Context 8192` chooses 8K. Later, if tests and resource measurements support it, try `-Context 16384`, `32768` or `65536`.
+The local API is `http://127.0.0.1:18084/v1` with **model name `qwen3.5-4b-strata-weehzi`**. Any external client still configured for the old 9B model ID must be updated to that name.
 
-The launcher **refuses to start** if there is less than 7 GiB available RAM or less than 2,300 MiB free VRAM, or if its local port is already taken. The C++ engine also estimates GPU memory before allocating. Those checks are safeguards, **not guarantees** against GPU load or slowdowns. Close no existing processes automatically.
+Optional quick benchmark with the server already running:
 
-## GPU-first upgrade
-
-All three agreed decisions (give memory back to other apps, speed before 64K, automatic memory budgets) are implemented in the experimental engine. The original launcher and binary are preserved.
-
-**Read [GPU-FIRST-STATUS.md](GPU-FIRST-STATUS.md) before switching versions.** The new `Run-Strata-Weehzi-GPU-First.cmd` is a separate, opt-in launcher. Its Windows binary has now been built and installed. `Install-Strata-Weehzi-GPU-First.cmd` is available to retry the installation if needed. It will never automatically replace the current executable or restart the server.
-
-## Connect Weehzi after successful inference testing
-
-- API base URL: `http://127.0.0.1:18084/v1`
-- Model ID: `qwen3.5-9b-strata-weehzi`
-- API is bound to **localhost only**. It has no key because no other devices can connect.
-- The server's OpenAI-compatible `/v1/chat/completions` route can be tested using `curl` or any compatible client.
-
-Do **not** switch Weehzi's primary provider until this fork completes real-model token correctness tests and tool-calling tests. A source compile is not enough.
-
-## What is and isn't ready
-
-- Host-specific Python venv and dependencies: installed
-- Original Windows engine: installed and verified to launch
-- GPU-first upgrade: successfully built, installed, launched and matched the original engine's 8-token output. Its measured small-test generation speed improved from 1.3 to 2.0 tokens/sec; **full real-chat and Weehzi tool tests are still pending**
-- Model: downloaded, SHA256 verified and tokenizer extracted
-- Basic real Qwen3.5-9B inference: confirmed on the original engine; previously around 0.6–1.4 tokens/sec
-- 32K / 64K: engineering targets, not guaranteed running configurations
-
-For download progress, in PowerShell:
 ```powershell
-Get-BitsTransfer -Name 'Strata-Weehzi Qwen3.5 9B' |
-  Select-Object JobState,BytesTransferred,BytesTotal
+.\weehzi-local\Benchmark-Strata-Weehzi.ps1 -MaxTokens 32
 ```
 
-For an error, consult the terminal output and Strata log. A file ending in `.part` or `.bits` is incomplete and must not be used directly.
+Optional standalone matching-output comparison, only with the server stopped and ample free memory:
 
-## Security and boundaries
+```powershell
+.\weehzi-local\Compare-Head-Fast.ps1 -Tokens 32
+```
 
-The setup does not install CUDA development tools, alter NVIDIA drivers, stop existing services, change your Wi-Fi/Tailscale settings, or edit the Weehzi codebase. It only runs the isolated experimental Strata model when you explicitly launch it.
+## Protections and limits
+
+- Only localhost can connect.
+- The launcher checks at least 7 GiB free system RAM, 2300 MiB free GPU memory, and that the API port is unused; it never closes other applications.
+- GPU-first uses adaptive model-weight caching (up to 2048 MiB extra), aiming for at least 1024 MiB free VRAM when possible. Windows handles RAM caching and SSD paging; Strata does not reserve 20 GB of RAM.
+- No changes to drivers, CUDA installations, Wi-Fi, Tailscale, Weehzi source or existing services.
+- 9B checkpoint and earlier benchmark records are historical. The 9B GGUF is only deleted after 4B passes validation and is no longer needed by a running process.
+- **Do not assume improved 4B speed or quality until a real 4B inference test succeeds.** Weehzi tool use and 32K/64K context are separate, unverified goals.
+
+Development history: [GPU-FIRST-STATUS.md](GPU-FIRST-STATUS.md) and [SPEED-OPTIMIZATION-STATUS.md](SPEED-OPTIMIZATION-STATUS.md) document the earlier 9B experiments.
