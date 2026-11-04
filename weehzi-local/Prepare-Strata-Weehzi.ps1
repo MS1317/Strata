@@ -2,7 +2,8 @@
 param(
     [ValidateSet(2048, 4096, 8192, 16384, 32768, 65536)]
     [int]$Context = 4096,
-    [switch]$GpuFirst
+    [switch]$GpuFirst,
+    [switch]$HeadFast
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -10,7 +11,8 @@ $data = Join-Path (Split-Path -Parent $root) 'Strata-Weehzi-data'
 $model = Join-Path $data 'models\Qwen3.5-9B-Q4_K_M.gguf'
 $stableEngine = Join-Path $root 'weehzi-local\bin\strata-q36.exe'
 $gpuFirstEngine = Join-Path $root 'weehzi-local\bin\strata-q36-gpu-first.exe'
-$engine = if ($GpuFirst) { $gpuFirstEngine } else { $stableEngine }
+$headFastEngine = Join-Path $root 'weehzi-local\bin\strata-q36-head-fast.exe'
+$engine = if ($HeadFast) { $headFastEngine } elseif ($GpuFirst) { $gpuFirstEngine } else { $stableEngine }
 $python = Join-Path $root '.venv\Scripts\python.exe'
 $tokenizer = Join-Path $data 'tokenizer'
 $config = Join-Path $data 'strata-weehzi.json'
@@ -55,5 +57,5 @@ $settings = [ordered]@{
 }
 [IO.File]::WriteAllText($config, ($settings | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 Write-Host "Strata configuration ready: $config"
-Write-Host "Version: $(if ($GpuFirst) {'GPU-first experimental'} else {'Original working build'})"
+Write-Host "Version: $(if ($HeadFast) {'GPU-first, fast output head (experimental)'} elseif ($GpuFirst) {'GPU-first experimental'} else {'Original working build'})"
 Write-Host "Context: $Context | Address: http://127.0.0.1:18084/v1"
