@@ -80,7 +80,9 @@ if ($reference.Tokens -ne $experiment.Tokens) {
     Write-Warning 'MODEL OUTPUT DIFFERED. Treat the fast-head experiment as a failed correctness check.'
     exit 1
 }
-$gain = 100.0 * ($experiment.TokensPerSecond / [math]::Max(0.01,$reference.TokensPerSecond) - 1)
-Write-Host ('Output matched exactly. Speed difference: {0:+0.0;-0.0;0.0}%' -f $gain)
+# Displayed tok/sec values are rounded to one decimal by Strata.
+# Use the unrounded millisecond measurements to avoid an inflated gain.
+$gain = 100.0 * ($reference.Milliseconds / [math]::Max(0.1,$experiment.Milliseconds) - 1)
+Write-Host ('Output matched exactly. Measured speed difference: {0:+0.0;-0.0;0.0}%' -f $gain)
 Write-Host "Logs saved in $logs"
 Write-Host 'The test executables exited; no server was started or left running.'
