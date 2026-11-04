@@ -1,0 +1,46 @@
+name: Package Weehzi Windows binary in unpublished draft release
+on:
+  push:
+    branches:
+      - feat/qwen35-9b-long-context
+    paths:
+      - '.github/workflows/weehzi-draft-binary.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  draft-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Get tested Windows binary package
+        uses: actions/download-artifact@v4
+        with:
+          name: Strata-Weehzi-GTX1650-Windows-x64
+          run-id: 41757614088
+          repository: MS1317/Strata
+          github-token: ${{ github.token }}
+          path: package
+      - name: Create portable archive
+        shell: bash
+        run: |
+          test -f package/strata-q36.exe
+          test -f package/cublasLt64_12.dll
+          cd package
+          zip -9 -q -r ../Strata-Weehzi-GTX1650-Windows-x64.zip .
+          cd ..
+          sha256sum Strata-Weehzi-GTX1650-Windows-x64.zip
+          du -h Strata-Weehzi-GTX1650-Windows-x64.zip
+      - name: Store as unpublished draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create weehzi-gtx1650-internal-20261104 \
+            Strata-Weehzi-GTX1650-Windows-x64.zip \
+            --repo MS1317/Strata \
+            --target feat/qwen35-9b-long-context \
+            --draft \
+            --title "INTERNAL UNTESTED - Strata Weehzi GTX1650" \
+            --notes "Personal-only experimental Windows CUDA build for the owner. Not validated for inference. Do not publish or recommend."
