@@ -4186,6 +4186,14 @@ struct Serve {
                      "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld (%s)\n", s, ids.size(), reuse,
                      (long long) fresh, prompt_ms, prompt_ms > 0 ? 1000.0 * (double) fresh / prompt_ms : 0.0, produced,
                      decode_ms, decode_ms > 0 ? 1000.0 * (double) produced / decode_ms : 0.0, accepted, offered, finish);
+        if (E.m->stream_dense)
+            std::fprintf(stderr, "strata-q36 GPU cache: %.0f MiB resident, %llu cache hits, "
+                                 "%llu staged misses, %.2f GiB of repeated model transfers "
+                                 "(cumulative; measure output tokens/second separately).\n",
+                         (double) E.dense_resident_bytes / strata::core::q35_mib,
+                         (unsigned long long) E.dense_hits,
+                         (unsigned long long) E.dense_misses,
+                         (double) E.dense_uploaded_bytes / (1024.0 * 1024.0 * 1024.0));
     }
 
     int run() {
