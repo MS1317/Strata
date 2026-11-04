@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/weehzi-windows-1650-build.yml'
       - 'CMakeLists.txt'
+      - 'src/qwen35/q36_engine.cu'
+      - 'include/strata/core/qwen35_residency.hpp'
   workflow_dispatch:
 permissions:
   contents: read
@@ -56,4 +58,12 @@ jobs:
           name: Strata-Weehzi-GTX1650-Windows-x64
           path: package/
           retention-days: 7
+          if-no-files-found: error
+      - name: Upload executable only (existing PC already has matching CUDA runtime DLLs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Q36-executable-only
+          path: package/strata-q36.exe
+          retention-days: 7
+          compression-level: 0
           if-no-files-found: error
