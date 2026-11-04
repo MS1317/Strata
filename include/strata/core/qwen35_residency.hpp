@@ -33,9 +33,10 @@ struct Qwen35ResidencyPolicy {
 
     std::size_t desired_cache(std::size_t free_bytes, std::size_t cached_bytes) const {
         // Current resident weights are reclaimable, but fixed GPU allocations are not.
-        const std::size_t room = free_bytes > keep_free_bytes ? free_bytes - keep_free_bytes : 0;
-        const std::size_t remaining = std::numeric_limits<std::size_t>::max() - room;
-        return std::min(max_cache_bytes, room + std::min(remaining, cached_bytes));
+        const std::size_t sum = free_bytes > std::numeric_limits<std::size_t>::max() - cached_bytes
+                                    ? std::numeric_limits<std::size_t>::max()
+                                    : free_bytes + cached_bytes;
+        return std::min(max_cache_bytes, sum > keep_free_bytes ? sum - keep_free_bytes : 0);
     }
 };
 
