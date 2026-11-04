@@ -95,3 +95,6 @@ node_modules/
 /build-spark/
 /build-vision-spark/
 /.venv-build/
+
+# Machine-local CUDA executables and NVIDIA runtime DLLs for the Weehzi experiment
+/weehzi-local/bin/
