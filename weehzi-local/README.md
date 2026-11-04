@@ -4,13 +4,13 @@ This setup is **personal and experimental**. It lives separately from Weehzi.
 
 ## Files
 
-- Repository: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi`
-- Model: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi-data\models\Qwen3.5-9B-Q4_K_M.gguf`
+- Repository: `C:\Users\<WindowsUser>\Desktop\Dev\AI\Strata-Weehzi`
+- Model: `C:\Users\<WindowsUser>\Desktop\Dev\AI\Strata-Weehzi-data\models\Qwen3.5-9B-Q4_K_M.gguf`
 - Original working Windows executable: `weehzi-local\bin\strata-q36.exe`
 - Opt-in adaptive GPU-first executable: `weehzi-local\bin\strata-q36-gpu-first.exe` (installed separately on this PC)
 - Virtual Python: `.venv\Scripts\python.exe`
-- API configuration: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi-data\strata-weehzi.json`
-- Engine/server log: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi-data\logs\strata-q36.log`
+- API configuration: `C:\Users\<WindowsUser>\Desktop\Dev\AI\Strata-Weehzi-data\strata-weehzi.json`
+- Engine/server log: `C:\Users\<WindowsUser>\Desktop\Dev\AI\Strata-Weehzi-data\logs\strata-q36.log`
 
 **Qwen3.5 GGUF**: `unsloth/Qwen3.5-9B-GGUF`, Q4_K_M, exact SHA256 `03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8`.
 
