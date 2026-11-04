@@ -1,6 +1,6 @@
 # GPU-first Strata for this Windows PC
 
-**State:** Source implemented, CUDA object compilation and policy checks passed. The updated Windows executable still needs a successful hosted build, installation and live performance/correctness tests.
+**State (4 November 2026):** Source, CPU policy tests, CUDA compilation, hosted Windows build and on-PC **executable installation** are complete. The new GPU-first engine still needs real-model inference, memory-pressure and speed tests.
 
 ## Agreed behavior
 
@@ -37,20 +37,14 @@ Optional per-process overrides, for advanced troubleshooting: `STRATA_Q35_GPU_CA
 - Basic requests produced correct visible answers when thinking mode was disabled.
 - Previously observed output speed: approximately **0.6–1.4 tokens/sec** with the uncached version. These are small, non-standardized tests, **not** a controlled benchmark.
 
-The new GPU-first version has **not** been run on the PC yet, so we do **not** claim any speed improvement.
+The new GPU-first executable **launches** on the PC, and the configuration correctly points to it, but real 9B inference has **not** been run with this version. We do **not** claim any speed improvement yet.
 
 ## How to resume safely
 
-1. Check the GPU-first Windows build on GitHub. Use only a successful run of **Weehzi Strata Windows GTX1650 build** containing the `Strata-Weehzi-Q36-executable-only` artifact.
-2. In PowerShell inside `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi`, run:
+1. Windows build **passed**: [GitHub Actions run #41775473477](https://github.com/MS1317/Strata/actions/runs/41775473477). Its 62 MB executable-only artifact was installed as `strata-q36-gpu-first.exe`. Windows verified it can launch and display its usage information. No model was loaded during this verification.
+2. **The installation is already done.** The one-click `Install-Strata-Weehzi-GPU-First.cmd` remains available for repeat installation or repair if required; it does not overwrite the original executable. No additional download is needed now.
 
-   ```powershell
-   .\weehzi-local\Install-GPU-First.ps1 -RunId <successful-Windows-run-ID>
-   ```
-
-   This adds only `weehzi-local\bin\strata-q36-gpu-first.exe`; it does not replace the working exe, its CUDA DLLs or the running model.
-
-3. **When ready to test**, stop the *Strata terminal only* with Ctrl+C. Do not stop any other apps, Wi-Fi or Tailscale.
+3. **When ready to test**, stop the *Strata terminal only* with Ctrl+C if it happens to be running. Do not stop any other apps, Wi-Fi or Tailscale. At the last check, port 18084 was unused.
 4. Run `Run-Strata-Weehzi-GPU-First.cmd`. It checks free RAM (minimum 7 GiB), free GPU VRAM (minimum 2,300 MiB) and that port 18084 is unused before launching. A refusal to start is a useful safety outcome, not a reason to force it.
 5. With the GPU-first server ready, run:
 
