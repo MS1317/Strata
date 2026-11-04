@@ -16,7 +16,7 @@ if ($freeRam -lt 7168) {
     throw "Not starting: only $freeRam MiB system RAM free (7 GiB required). Close no apps automatically."
 }
 
-$gpuText = & nvidia-smi --query-gpu=memory.free --format=csv,noheader
+$gpuText = @(& nvidia-smi --query-gpu=memory.free --format=csv,noheader)
 if ($LASTEXITCODE -ne 0 -or !$gpuText) { throw 'Cannot read GPU free VRAM using nvidia-smi' }
 $match = [regex]::Match([string]$gpuText[0], '^\s*(\d+)')
 if (!$match.Success) { throw "Unexpected nvidia-smi output: $gpuText" }
