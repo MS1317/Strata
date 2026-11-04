@@ -7,10 +7,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $data = Join-Path (Split-Path -Parent $root) 'Strata-Weehzi-data'
-$model = Join-Path $data 'models\Qwen3.5-9B-Q4_K_M.gguf'
+$model = Join-Path $data 'models\Qwen3.5-4B-Q4_K_M.gguf'
 $gpu = Join-Path $PSScriptRoot 'bin\strata-q36-gpu-first.exe'
 $fast = Join-Path $PSScriptRoot 'bin\strata-q36-head-fast.exe'
-$logs = Join-Path $data 'logs\speed-tests'
+$logs = Join-Path $data 'logs\speed-tests-4b'
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
 foreach ($file in @($model,$gpu,$fast)) {
     if (!(Test-Path -LiteralPath $file)) { throw "Missing: $file" }
@@ -70,6 +70,7 @@ function Run-Variant([string]$name, [string]$exe) {
         TokensPerSecond=[double]$timing.Groups[3].Value
     }
 }
+$env:STRATA_Q35_STREAM_DENSE='1'
 $env:STRATA_Q35_GPU_CACHE_MB='2048'
 $env:STRATA_Q35_GPU_KEEP_FREE_MB='1024'
 $reference = Run-Variant 'gpu-first' $gpu
