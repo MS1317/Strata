@@ -37,13 +37,22 @@ Optional standalone matching-output comparison, only with the server stopped and
 .\weehzi-local\Compare-Head-Fast.ps1 -Tokens 32
 ```
 
+## Confirmed replacement status
+
+- Qwen3.5 4B Q4_K_M: downloaded, verified against its official SHA-256, and used successfully.
+- Qwen3.5 4B tokenizer: extracted into a dedicated folder and passed 16 round-trip checks.
+- Local server: successfully loaded model `qwen3.5-4b-strata-weehzi` and returned a correct normal chat response.
+- Old 9B GGUF: **removed** after verification; the existing Strata executables and historical development logs are preserved.
+- Temporary 4B test server: stopped cleanly. Start the regular launcher when you want to use it.
+
 ## Protections and limits
 
 - Only localhost can connect.
 - The launcher checks at least 7 GiB free system RAM, 2300 MiB free GPU memory, and that the API port is unused; it never closes other applications.
 - GPU-first uses adaptive model-weight caching (up to 2048 MiB extra), aiming for at least 1024 MiB free VRAM when possible. Windows handles RAM caching and SSD paging; Strata does not reserve 20 GB of RAM.
 - No changes to drivers, CUDA installations, Wi-Fi, Tailscale, Weehzi source or existing services.
-- 9B checkpoint and earlier benchmark records are historical. The 9B GGUF is only deleted after 4B passes validation and is no longer needed by a running process.
-- **Do not assume improved 4B speed or quality until a real 4B inference test succeeds.** Weehzi tool use and 32K/64K context are separate, unverified goals.
+- The 9B GGUF was deleted on November 4, 2026 **after** 4B passed checksum, tokenizer round-trip checks, a 16-token native generation test, and a normal API chat response. Earlier 9B benchmark records remain available as project history.
+- The 4B engine generated 16 tokens at **5.1 tokens/second** in a standalone CLI test. A separate API request answered "2 plus 2 equals 4" correctly at **2.9 tokens/second** (9 output tokens). These short tests are not a controlled quality benchmark.
+- Weehzi tool use, sustained speed, and 32K/64K context remain **unverified**.
 
 Development history: [GPU-FIRST-STATUS.md](GPU-FIRST-STATUS.md) and [SPEED-OPTIMIZATION-STATUS.md](SPEED-OPTIMIZATION-STATUS.md) document the earlier 9B experiments.
