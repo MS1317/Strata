@@ -32,6 +32,19 @@ In `src/qwen35/q36_engine.cu`, if the output vocabulary weights already reside o
 4. If direct full-head kernel fails, **roll back immediately** to the existing `Run-Strata-Weehzi-GPU-First.cmd` rather than changing Weehzi or its application settings.
 5. If speed gain is small, profile per-token copied bytes, time in CUDA weight transfers and time in GPU kernels; consider pinned-memory pipelining only with explicit buffer limits and correctness tests. NVIDIA documentation notes truly asynchronous host-to-device transfers need pinned host memory and separate streams to overlap with computation. Do **not** pin the whole 5.68GB model on this multitasking PC.
 
+## Measured 32-token comparison (4 November 2026)
+
+The previously running Strata server had stopped before this test; no unrelated programs were terminated. Both programs were run sequentially with the same model, input token, context size and cache settings. The generated 32-token sequences matched exactly.
+
+| Build | 32-token generation | Reported rate |
+| --- | ---: | ---: |
+| Existing GPU-first | 18,415.5 ms | 1.7 tokens/sec |
+| One-pass output head | 18,164.7 ms | 1.8 tokens/sec |
+
+The measured throughput difference is **+1.4%**, calculated from the full-precision durations. An earlier script displayed **+5.9%** because it divided rounded rate values; that script has been corrected. The 250.8 ms difference is too small to establish a reliable real-world performance benefit from one run.
+
+**Decision:** Keep the one-pass output-head executable as an optional experiment, not the default. The principal bottleneck remains repeated transfers of dense model weights from RAM to the GPU (prior logs show approximately 3 GiB per generated token). Further speed work should concentrate there before longer context or memory-pressure tests.
+
 ## Status
 
 CUDA source compiles, Windows executable builds, downloads, and launches. **Real-world speed gain from this new output-head change has not yet been measured.** The original GPU-first server is still active on port 18084 and was not restarted. A concurrent second 9B model would compete for VRAM, so the comparison has intentionally not run. Do not claim improvement until a matched baseline on the PC is completed.
