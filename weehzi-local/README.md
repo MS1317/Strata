@@ -19,7 +19,7 @@ Download source: `unsloth/Qwen3.5-4B-GGUF`, file `Qwen3.5-4B-Q4_K_M.gguf`, size 
 
 1. If still downloading, check progress with `Get-BitsTransfer -Name 'Strata-Weehzi Qwen3.5 4B'`.
 2. Once the download says **Transferred**, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\weehzi-local\Finalize-Model-Download.ps1`. This verifies the checksum before the GGUF can be used.
-3. Run **`Run-Strata-Weehzi-GPU-First.cmd`** in the repository directory. It checks free memory before starting and forces bounded GPU weight staging to avoid accidental VRAM exhaustion. The first target remains **4K context**.
+3. Run **`Run-Strata-Weehzi-GPU-First.cmd`** in the repository directory. It now defaults to **32K context (32,768 tokens)**. It checks free memory before starting and uses bounded GPU weight staging to avoid accidental VRAM exhaustion. If 32K cannot fit, run `Run-Strata-Weehzi-GPU-First.cmd -Context 16384` for **16K context**.
 4. Open `http://127.0.0.1:18084/` for chat. To check status: `Check-Strata-Weehzi.cmd`.
 5. To stop: **Ctrl+C inside the Strata terminal only**.
 
@@ -44,6 +44,22 @@ Optional standalone matching-output comparison, only with the server stopped and
 - Local server: successfully loaded model `qwen3.5-4b-strata-weehzi` and returned a correct normal chat response.
 - Old 9B GGUF: **removed** after verification; the existing Strata executables and historical development logs are preserved.
 - Temporary 4B test server: stopped cleanly. Start the regular launcher when you want to use it.
+
+## Context length: 32K default, 16K fallback
+
+The Strata engine already accepts `--max-context 32768`; no new GPU executable is required. Both `Prepare-Strata-Weehzi.ps1` and `Start-Strata-Weehzi.ps1` now default to `-Context 32768`, so the existing double-click launcher selects 32K on its next start.
+
+**Important:** The currently running Strata process will keep the context size it was originally launched with (possibly 4K). No process is stopped or restarted just by changing these files. When ready, stop **only** Strata with Ctrl+C in its own terminal and launch it again. Verify the new value with `Check-Strata-Weehzi.cmd` or `http://127.0.0.1:18084/health`.
+
+If 32K fails its GPU memory preflight, try:
+
+```powershell
+.\Run-Strata-Weehzi-GPU-First.cmd -Context 16384
+```
+
+This uses 16K, rather than trying to force 32K by taking memory from other applications.
+
+The engine uses 8-bit compressed conversation cache. The 4K cache previously took about 0.06 GiB and the 32K cache is estimated around 0.5 GiB, plus additional temporary GPU buffers. **32K and 16K real-model sessions have not yet been validated;** the preflight safety check is not a performance guarantee. Long prompts may take substantially longer than short prompts.
 
 ## Protections and limits
 
