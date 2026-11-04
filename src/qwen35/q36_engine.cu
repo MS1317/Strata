@@ -2600,8 +2600,14 @@ struct Engine {
             const auto found_head = dense_resident_map.find(hd.host);
             const uint8_t* resident_head = found_head != dense_resident_map.end() ?
                                             found_head->second : nullptr;
-            if (resident_head) ++dense_hits;
-            for (int start = 0; start < hd.n_out; start += kDenseHeadTileRows) {
+            if (resident_head) {
+                // All vocabulary rows are resident: dispatch one native MMVQ
+                // instead of (V/4096) kernels and 2D copies per token.
+                // The native kernel writes the same row-major logit layout
+                // directly to the final destination, with no extra VRAM.
+                ++dense_hits;
+                K::native_mmvq(hd.type, resident_head, q8, lg, hd.n_in, hd.n_out, n, st);
+            } else for (int start = 0; start < hd.n_out; start += kDenseHeadTileRows) {
                 const int nr = std::min(kDenseHeadTileRows, hd.n_out - start);
                 const uint8_t* tile = resident_head ? resident_head + (size_t) start * row : dense_stage;
                 if (!resident_head) {
