@@ -46,8 +46,14 @@ function Run-Variant([string]$name, [string]$exe) {
         $process.Kill()
         throw "$name exceeded a 3-minute safety timeout. Stopped only its own test process."
     }
-    if ($process.ExitCode -ne 0) {
-        throw "$name exited with code $($process.ExitCode). Read $err; other programs are unaffected."
+    # Windows PowerShell 5.1 can leave Start-Process -PassThru's ExitCode
+    # unset even after WaitForExit. Refresh first, then treat null as
+    # unknown (not failure); the required generated tokens and timing
+    # below independently establish that the engine completed.
+    $process.Refresh()
+    $exitCode = $process.ExitCode
+    if ($null -ne $exitCode -and $exitCode -ne 0) {
+        throw "$name exited with code $exitCode. Read $err; other programs are unaffected."
     }
     $stdout = Get-Content $out -Raw
     $stderr = Get-Content $err -Raw
