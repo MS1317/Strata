@@ -31,10 +31,13 @@ if ($freeVram -lt 2300) {
 $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
 if ($listener) { throw "Local port $port is already in use. Refusing to interrupt the existing service." }
 
-Write-Host "Available: $freeRam MiB RAM, $freeVram MiB VRAM. Preparing $Context token context..."
+Write-Host "Available: $freeRam MiB RAM, $freeVram MiB VRAM. Preparing Qwen3.5 4B at $Context tokens..."
 & (Join-Path $PSScriptRoot 'Prepare-Strata-Weehzi.ps1') -Context $Context -GpuFirst:$GpuFirst -HeadFast:$HeadFast
 if ($LASTEXITCODE -ne 0) { throw 'Setup failed' }
 $config = Join-Path $data 'strata-weehzi.json'
+# 4B may fit as weights but not once its working memory and context are counted.
+# Retain the bounded GPU-first cache and conservative VRAM preflight on all versions.
+$env:STRATA_Q35_STREAM_DENSE = '1'
 if ($GpuFirst -or $HeadFast) {
     # Adaptive model-weight caching. These set maximums, not a demand to fill VRAM.
     # The engine continuously preserves its free-VRAM reserve and can give weights back.
@@ -46,7 +49,7 @@ if ($GpuFirst -or $HeadFast) {
     Write-Host 'Starting original working binary (the GPU-first build is opt-in).'
 }
 Write-Host 'Launching experimental model in this terminal. Press Ctrl+C to stop.'
-Write-Host "API: http://127.0.0.1:$port/v1 | Model: qwen3.5-9b-strata-weehzi"
+Write-Host "API: http://127.0.0.1:$port/v1 | Model: qwen3.5-4b-strata-weehzi"
 Push-Location $root
 try {
     & $python -m serve.server --engine strata --config $config --host 127.0.0.1 --port $port
