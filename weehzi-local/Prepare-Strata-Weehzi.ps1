@@ -46,6 +46,7 @@ $settings = [ordered]@{
     log = $log
     lazy_load = $false
     api_key = ''
+    reasoning_effort = 'none' # Emit normal content by default for OpenAI-compatible clients
     fit_max_tokens = $true
     sampling = @{temperature = 0.6; top_p = 0.95}
 }
