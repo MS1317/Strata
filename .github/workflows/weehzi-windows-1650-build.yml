@@ -5,6 +5,7 @@ on:
       - feat/qwen35-9b-long-context
     paths:
       - '.github/workflows/weehzi-windows-1650-build.yml'
+      - 'CMakeLists.txt'
   workflow_dispatch:
 permissions:
   contents: read
@@ -33,7 +34,7 @@ jobs:
       - name: Configure for GTX 1650 (sm_75)
         shell: pwsh
         run: |
-          cmake -S . -B build-weehzi-win -G "Visual Studio 17 2022" -A x64 -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_BUILD_TESTS=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_MMQ_KQUANTS=ON
+          cmake -S . -B build-weehzi-win -G "Visual Studio 17 2022" -A x64 -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_BUILD_TESTS=OFF -DSTRATA_NATIVE_EXPERTS=OFF -DSTRATA_MMQ_KQUANTS=ON
       - name: Build Qwen3.5 engine
         shell: pwsh
         run: cmake --build build-weehzi-win --target strata-q36 --config Release --parallel 3
