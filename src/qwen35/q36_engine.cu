@@ -1870,7 +1870,7 @@ struct Engine {
     // Run only at the boundary before a model forward, never in the middle of
     // a GPU kernel. Give extra weight copies back if another application needs
     // VRAM. Add a bounded amount per forward when memory is comfortably free.
-    void balance_dense_residency() {
+    void balance_dense_residency(bool allow_growth = true) {
         if (!m->stream_dense || !dense_stage || dense_candidates.empty() ||
             dense_policy.max_cache_bytes == 0) return;
         size_t free_vram = 0, total_vram = 0;
@@ -1896,7 +1896,9 @@ struct Engine {
                              (double) free_vram / strata::core::q35_mib);
             return; // Hysteresis: never re-admit in the same step as an eviction.
         }
-        if (free_vram <= dense_policy.keep_free_bytes) return;
+        // Do not claim new VRAM merely because the model is sitting idle.
+        // Only model work can grow this opportunistic cache.
+        if (!allow_growth || free_vram <= dense_policy.keep_free_bytes) return;
         size_t added = 0;
         for (const Mat* w : dense_candidates) {
             if (dense_resident_map.find(w->host) != dense_resident_map.end()) continue;
@@ -4209,16 +4211,21 @@ struct Serve {
             bool have = false;
             {
                 std::unique_lock<std::mutex> lk(mu);
-                if (n_active == 0) cv.wait(lk, [&] { return eof || !lines.empty(); });
+                if (n_active == 0)
+                    cv.wait_for(lk, std::chrono::seconds(2), [&] { return eof || !lines.empty(); });
                 if (!lines.empty()) {
                     line = lines.front();
                     lines.pop_front();
                     have = true;
-                } else if (n_active == 0) {
+                } else if (n_active == 0 && eof) {
                     return 0;
                 }
             }
-            if (!have) { window(); continue; }
+            if (!have) {
+                if (n_active == 0) E.balance_dense_residency(false);
+                else window();
+                continue;
+            }
             if (line.empty()) continue;
             if (line.rfind("BSTOP ", 0) == 0) {
                 const int b = std::atoi(line.c_str() + 6);
