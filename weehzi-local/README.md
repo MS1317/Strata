@@ -6,7 +6,8 @@ This setup is **personal and experimental**. It lives separately from Weehzi.
 
 - Repository: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi`
 - Model: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi-data\models\Qwen3.5-9B-Q4_K_M.gguf`
-- Windows executable: `weehzi-local\bin\strata-q36.exe`
+- Original working Windows executable: `weehzi-local\bin\strata-q36.exe`
+- Opt-in adaptive GPU-first executable: `weehzi-local\bin\strata-q36-gpu-first.exe` (installed separately after CI succeeds)
 - Virtual Python: `.venv\Scripts\python.exe`
 - API configuration: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi-data\strata-weehzi.json`
 - Engine/server log: `C:\Users\manpr\Desktop\Dev\AI\Strata-Weehzi-data\logs\strata-q36.log`
@@ -24,6 +25,12 @@ Advanced: from Command Prompt in the repository, `Run-Strata-Weehzi.cmd -Context
 
 The launcher **refuses to start** if there is less than 7 GiB available RAM or less than 2,300 MiB free VRAM, or if its local port is already taken. The C++ engine also estimates GPU memory before allocating. Those checks are safeguards, **not guarantees** against GPU load or slowdowns. Close no existing processes automatically.
 
+## GPU-first upgrade
+
+All three agreed decisions (give memory back to other apps, speed before 64K, automatic memory budgets) are implemented in the experimental engine. The original launcher and binary are preserved.
+
+**Read [GPU-FIRST-STATUS.md](GPU-FIRST-STATUS.md) before switching versions.** The new `Run-Strata-Weehzi-GPU-First.cmd` is a separate, opt-in launcher. Its Windows binary must be built and installed using `Install-GPU-First.ps1`. It will never automatically replace the current executable or restart the server.
+
 ## Connect Weehzi after successful inference testing
 
 - API base URL: `http://127.0.0.1:18084/v1`
@@ -36,9 +43,10 @@ Do **not** switch Weehzi's primary provider until this fork completes real-model
 ## What is and isn't ready
 
 - Host-specific Python venv and dependencies: installed
-- Windows engine: depends on the GitHub Actions build artifact; install only the build from the fork's feature branch
-- Model: download through Windows BITS at low priority, then verify SHA256. The launcher calls `Finalize-Model-Download.ps1` for a completed transfer.
-- Real Qwen3.5-9B answers: not yet verified
+- Original Windows engine: installed and verified to launch
+- GPU-first upgrade: separate source changes committed; host-compiled tests passed, real speed gain still unverified
+- Model: downloaded, SHA256 verified and tokenizer extracted
+- Basic real Qwen3.5-9B inference: confirmed on the original engine; previously around 0.6–1.4 tokens/sec
 - 32K / 64K: engineering targets, not guaranteed running configurations
 
 For download progress, in PowerShell:
