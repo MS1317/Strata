@@ -20,6 +20,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/family_layout.hpp"
 #include "strata/core/qwen35_dense_staging.hpp"
+#include "strata/core/qwen35_residency.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -60,6 +61,7 @@
 #include <thread>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -1372,6 +1374,20 @@ struct Engine {
     // so a queued copy cannot overwrite weights while an earlier kernel reads them.
     uint8_t* dense_stage = nullptr;
     size_t dense_stage_capacity = 0;
+    // A bounded GPU-first cache for model matrices. Stable Mat references point
+    // into Model, whose GGUF mapping stays alive for this engine's lifetime.
+    struct DenseResident {
+        const uint8_t* host = nullptr;
+        uint8_t* gpu = nullptr;
+        size_t bytes = 0;
+    };
+    std::vector<const Mat*> dense_candidates;
+    std::vector<DenseResident> dense_resident;
+    std::unordered_map<const uint8_t*, const uint8_t*> dense_resident_map;
+    strata::core::Qwen35ResidencyPolicy dense_policy;
+    size_t dense_resident_bytes = 0;
+    uint64_t dense_hits = 0, dense_misses = 0, dense_uploaded_bytes = 0;
+    uint64_t dense_rebalance_calls = 0;
     // On a 4GB GPU, gather only the token rows actually requested.
     uint8_t* embed_stage = nullptr;
     int32_t* embed_indices = nullptr;
@@ -1790,6 +1806,7 @@ struct Engine {
         std::fprintf(stderr, "strata-q36: VRAM: weights %.2f GiB, cache+state+buffers %.2f GiB, free %.2f of %.2f GiB\n",
                      vram_w_gib, (double) (vram_fr_after_weights - fr) / (1 << 30), (double) fr / (1 << 30),
                      vram_tot_gib);
+        if (m->stream_dense) init_dense_residency();
     }
 
     /// The recurrent state and the cache to a fresh sequence.
@@ -1806,11 +1823,121 @@ struct Engine {
         set_delta(0);
     }
 
+    // Populate a prioritized list; dense output projections run every token, so
+    // keeping the output head resident often avoids the most host-to-device traffic.
+    // Every other dense layer is also active every token: large matrices next,
+    // rather than assuming there are "cold" inactive layers as in a MoE model.
+    void init_dense_residency() {
+        if (const char* v = std::getenv("STRATA_Q35_GPU_CACHE_MB")) {
+            char* end = nullptr;
+            long mb = std::strtol(v, &end, 10);
+            if (end && *end == '\0' && mb >= 0 && mb <= 2048)
+                dense_policy.max_cache_bytes = (size_t) mb * strata::core::q35_mib;
+        }
+        if (const char* v = std::getenv("STRATA_Q35_GPU_KEEP_FREE_MB")) {
+            char* end = nullptr;
+            long mb = std::strtol(v, &end, 10);
+            if (end && *end == '\0' && mb >= 768 && mb <= 2048) {
+                dense_policy.keep_free_bytes = (size_t) mb * strata::core::q35_mib;
+                dense_policy.reclaim_below_bytes = dense_policy.keep_free_bytes -
+                    256 * strata::core::q35_mib;
+            }
+        }
+        auto add = [&](const Mat& w) {
+            if (!w.host || !w.bytes) return;
+            for (const Mat* old : dense_candidates)
+                if (old->host == w.host) return;
+            dense_candidates.push_back(&w);
+        };
+        add(m->head);
+        const size_t sorted_from = dense_candidates.size();
+        auto take = [&](const Layer& l) {
+            for (const Mat* w : {&l.qkv, &l.zg, &l.ssm_out, &l.wq, &l.wk, &l.wv, &l.wo,
+                                 &l.sh_gate, &l.sh_up, &l.sh_down}) add(*w);
+        };
+        for (const Layer& l : m->layers) take(l);
+        if (m->has_mtp) { add(m->eh_proj); take(m->mtp); }
+        std::stable_sort(dense_candidates.begin() + sorted_from, dense_candidates.end(),
+                         [](const Mat* a, const Mat* b) { return a->bytes > b->bytes; });
+        std::fprintf(stderr, "strata-q36: GPU-first cache: up to %.0f MiB of reusable weights, "
+                             "leave >= %.0f MiB free VRAM; %zu candidate matrices. "
+                             "No extra RAM copy: Windows manages the mapped GGUF file.\n",
+                     (double) dense_policy.max_cache_bytes / strata::core::q35_mib,
+                     (double) dense_policy.keep_free_bytes / strata::core::q35_mib,
+                     dense_candidates.size());
+    }
+
+    // Run only at the boundary before a model forward, never in the middle of
+    // a GPU kernel. Give extra weight copies back if another application needs
+    // VRAM. Add a bounded amount per forward when memory is comfortably free.
+    void balance_dense_residency() {
+        if (!m->stream_dense || !dense_stage || dense_candidates.empty() ||
+            dense_policy.max_cache_bytes == 0) return;
+        size_t free_vram = 0, total_vram = 0;
+        CK(cudaMemGetInfo(&free_vram, &total_vram));
+        ++dense_rebalance_calls;
+        if (dense_policy.should_reclaim(free_vram, dense_resident_bytes)) {
+            CK(cudaStreamSynchronize(st));
+            size_t released = 0;
+            while (free_vram < dense_policy.keep_free_bytes && !dense_resident.empty()) {
+                DenseResident w = dense_resident.back();
+                dense_resident.pop_back();
+                dense_resident_map.erase(w.host);
+                CK(cudaFree(w.gpu));
+                dense_resident_bytes -= w.bytes;
+                released += w.bytes;
+                CK(cudaMemGetInfo(&free_vram, &total_vram));
+            }
+            if (released)
+                std::fprintf(stderr, "strata-q36: VRAM pressure: returned %.0f MiB of GPU-cached weights "
+                                     "(%.0f MiB still cached, %.0f MiB free).\n",
+                             (double) released / strata::core::q35_mib,
+                             (double) dense_resident_bytes / strata::core::q35_mib,
+                             (double) free_vram / strata::core::q35_mib);
+            return; // Hysteresis: never re-admit in the same step as an eviction.
+        }
+        if (free_vram <= dense_policy.keep_free_bytes) return;
+        size_t added = 0;
+        for (const Mat* w : dense_candidates) {
+            if (dense_resident_map.find(w->host) != dense_resident_map.end()) continue;
+            if (!dense_policy.can_admit(free_vram, w->bytes, dense_resident_bytes, added)) continue;
+            uint8_t* gpu = nullptr;
+            const cudaError_t status = cudaMalloc(&gpu, w->bytes);
+            if (status != cudaSuccess) {
+                (void) cudaGetLastError(); // harmless admission failure: retain the slow staging fallback
+                break;
+            }
+            // Copies and consumers share st; a cached matrix is never used before this finishes.
+            CK(cudaMemcpyAsync(gpu, w->host, w->bytes, cudaMemcpyHostToDevice, st));
+            dense_resident.push_back({w->host, gpu, w->bytes});
+            dense_resident_map.emplace(w->host, gpu);
+            dense_resident_bytes += w->bytes;
+            added += w->bytes;
+            free_vram -= w->bytes;
+            if (added >= dense_policy.grow_per_step_bytes) break;
+        }
+        if (added && (dense_rebalance_calls == 1 || dense_rebalance_calls % 8 == 0))
+            std::fprintf(stderr, "strata-q36: resident GPU weights %.0f MiB; "
+                                 "saved copies as requests reuse them (%.0f MiB VRAM left).\n",
+                         (double) dense_resident_bytes / strata::core::q35_mib,
+                         (double) free_vram / strata::core::q35_mib);
+    }
+
     // Resolve a file-backed dense matrix just before the GPU operation that needs it.
-    // Every copy and its consumer run on st, with strict stream ordering. Do not
-    // enable token graphs until staging lifetime is explicitly represented in them.
+    // Cached matrices are reused. Uncached ones go through the original one-matrix
+    // staging allocation and retain exactly the same MMVQ numerical behavior.
     Mat gpu_mat(const Mat& w) {
         if (!w.host) return w;
+        const auto resident = dense_resident_map.find(w.host);
+        if (resident != dense_resident_map.end()) {
+            ++dense_hits;
+            Mat cached = w;
+            cached.d = resident->second;
+            cached.host = nullptr;
+            return cached;
+        }
+        ++dense_misses;
+        dense_uploaded_bytes += w.bytes;
         if (!dense_stage || w.bytes > dense_stage_capacity) {
             std::fprintf(stderr, "strata-q36: matrix staging buffer too small\n");
             std::exit(1);
@@ -2432,6 +2559,7 @@ struct Engine {
     /// final normed hidden; `heads` rows from the end get logits (rows [T - heads, T): logits row r - (T - heads)) and
     /// their greedy picks (`pick`).  `verify`: a verify window (the GDN state left for commit()).
     void forward(int T, int64_t p0, int heads, bool graph_mode, bool verify) {
+        if (m->stream_dense && !graph_mode) balance_dense_residency();
         const auto& g = m->g;
         const int N = (int) g.n_embd;
         if (main_hybrid && T > hybrid_t && use_mmq) {
@@ -2467,12 +2595,21 @@ struct Engine {
             // to that original layout before argmax/sampling consumes it.
             prep(hn, hd.n_in, n, q8);
             const size_t qb = K::native_q8_1_bytes(hd.n_in, 1);
+            const auto found_head = dense_resident_map.find(hd.host);
+            const uint8_t* resident_head = found_head != dense_resident_map.end() ?
+                                            found_head->second : nullptr;
+            if (resident_head) ++dense_hits;
             for (int start = 0; start < hd.n_out; start += kDenseHeadTileRows) {
                 const int nr = std::min(kDenseHeadTileRows, hd.n_out - start);
-                CK(cudaMemcpyAsync(dense_stage, hd.host + (size_t) start * row,
-                                   (size_t) nr * row, cudaMemcpyHostToDevice, st));
+                const uint8_t* tile = resident_head ? resident_head + (size_t) start * row : dense_stage;
+                if (!resident_head) {
+                    CK(cudaMemcpyAsync(dense_stage, hd.host + (size_t) start * row,
+                                       (size_t) nr * row, cudaMemcpyHostToDevice, st));
+                    ++dense_misses;
+                    dense_uploaded_bytes += (size_t) nr * row;
+                }
                 for (int j = 0; j < n; ++j)
-                    K::native_mmvq(hd.type, dense_stage, (const uint8_t*) q8 + (size_t) j * qb,
+                    K::native_mmvq(hd.type, tile, (const uint8_t*) q8 + (size_t) j * qb,
                                    head_tile_logits + (size_t) j * nr, hd.n_in, nr, 1, st);
                 CK(cudaMemcpy2DAsync(lg + start, (size_t) hd.n_out * sizeof(float),
                                      head_tile_logits, (size_t) nr * sizeof(float),
@@ -2515,6 +2652,7 @@ struct Engine {
     /// seeds[t] (the main model's normed hidden of the position before, or the block's own for a chained draft);
     /// hmtp gets each row's normed output.  `draft`: logits of the last row and its pick (`pick_m`).
     void forward_mtp(int T, int64_t p0, const float* seeds, bool draft, bool graph_mode) {
+        if (m->stream_dense && !graph_mode) balance_dense_residency();
         const auto& g = m->g;
         const int N = (int) g.n_embd;
         if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && use_mmq) stream_begin({(int) m->layers.size()});
