@@ -2,7 +2,7 @@
 # Ctrl+C ends the server. It does not stop other applications or services.
 param(
     [ValidateSet(2048, 4096, 8192, 16384, 32768, 65536)]
-    [int]$Context = 4096,
+    [int]$Context = 32768,
     [switch]$GpuFirst,
     [switch]$HeadFast
 )
@@ -32,6 +32,10 @@ $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Sil
 if ($listener) { throw "Local port $port is already in use. Refusing to interrupt the existing service." }
 
 Write-Host "Available: $freeRam MiB RAM, $freeVram MiB VRAM. Preparing Qwen3.5 4B at $Context tokens..."
+if ($Context -ge 32768) {
+    Write-Host '32K context selected. The GPU memory preflight will refuse unsafe configurations.'
+    Write-Host 'If memory is insufficient, retry with -Context 16384 (16K fallback).'
+}
 & (Join-Path $PSScriptRoot 'Prepare-Strata-Weehzi.ps1') -Context $Context -GpuFirst:$GpuFirst -HeadFast:$HeadFast
 if ($LASTEXITCODE -ne 0) { throw 'Setup failed' }
 $config = Join-Path $data 'strata-weehzi.json'
