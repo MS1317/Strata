@@ -1852,12 +1852,23 @@ endif()
 
 if(STRATA_CPU_X86)
   add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
-              src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp)
+              src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp
+              src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/hadamard.cpp)
 else()
   add_library(strata_kernels_cpu STATIC src/kernels/cpu/portable.cpp src/kernels/cpu/pool.cpp
               src/kernels/cpu/expert_layout.cpp src/kernels/cpu/hadamard.cpp)
 endif()
 target_include_directories(strata_kernels_cpu PUBLIC include)
+# q2_avx1.cpp supplies the fallback symbols referenced by expert_layout.cpp
+# even for dense-only builds with STRATA_NATIVE_EXPERTS=OFF.
+if(STRATA_CPU_X86)
+  if(MSVC)
+    set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
+  else()
+    set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS
+                                "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
+  endif()
+endif()
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
 if(MSVC)
@@ -1978,7 +1989,7 @@ if(STRATA_NATIVE_EXPERTS)
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp)
   if(STRATA_CPU_X86)
     target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
-                                             src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp
+                                             src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp
                                              src/kernels/cpu/iq_avx1.cpp src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp
                                              src/kernels/cpu/tq_cpu.cpp src/kernels/cpu/tq_avx2.cpp src/kernels/cpu/tq_avx512.cpp)
   else()
