@@ -1,0 +1,144 @@
+name: Weehzi Windows build — small download parts
+on:
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  repack:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Get successful prebuilt Strata executable
+        uses: actions/download-artifact@v4
+        with:
+          name: Strata-Weehzi-GTX1650-Windows-x64
+          run-id: 41757614088
+          github-token: ${{ github.token }}
+          path: original
+      - name: Make one reproducible zip and smaller 80 MiB parts
+        shell: pwsh
+        run: |
+          Compress-Archive -Path original\* -DestinationPath full.zip -CompressionLevel Optimal
+          New-Item -ItemType Directory -Path chunks -Force | Out-Null
+          $sha = (Get-FileHash full.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $source = [IO.File]::OpenRead((Resolve-Path full.zip).Path)
+          $size = 80 * 1MB
+          $index = 0
+          try {
+            while ($source.Position -lt $source.Length) {
+              $index++
+              $part = "part-{0:D2}.bin" -f $index
+              $dest = [IO.File]::Create((Join-Path 'chunks' $part))
+              try {
+                $remaining = [Math]::Min([long]$size, $source.Length - $source.Position)
+                $buffer = New-Object byte[] (1MB)
+                while ($remaining -gt 0) {
+                  $requested = [int][Math]::Min($buffer.Length, $remaining)
+                  $n = $source.Read($buffer, 0, $requested)
+                  if ($n -le 0) { throw 'Unexpected end of archive' }
+                  $dest.Write($buffer, 0, $n)
+                  $remaining -= $n
+                }
+              } finally { $dest.Dispose() }
+            }
+          } finally { $source.Dispose() }
+          if ($index -gt 12) { throw "Unexpected large archive: $index parts" }
+          @{ sha256=$sha; parts=$index; archive='full.zip'; chunk_mib=80 } |
+            ConvertTo-Json | Set-Content -Path chunks\manifest.json -Encoding utf8
+          Get-ChildItem chunks | Select-Object Name,Length | Format-Table
+      - name: Upload installation manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Manifest
+          path: chunks/manifest.json
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-01
+          path: chunks/part-01.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-02
+          path: chunks/part-02.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 03
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-03
+          path: chunks/part-03.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 04
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-04
+          path: chunks/part-04.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 05
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-05
+          path: chunks/part-05.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 06
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-06
+          path: chunks/part-06.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 07
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-07
+          path: chunks/part-07.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 08
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-08
+          path: chunks/part-08.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 09 if needed
+        if: ${{ hashFiles('chunks/part-09.bin') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-09
+          path: chunks/part-09.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 10 if needed
+        if: ${{ hashFiles('chunks/part-10.bin') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-10
+          path: chunks/part-10.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 11 if needed
+        if: ${{ hashFiles('chunks/part-11.bin') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-11
+          path: chunks/part-11.bin
+          compression-level: 0
+          retention-days: 7
+      - name: Upload part 12 if needed
+        if: ${{ hashFiles('chunks/part-12.bin') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Strata-Weehzi-Part-12
+          path: chunks/part-12.bin
+          compression-level: 0
+          retention-days: 7
