@@ -46,6 +46,6 @@ $settings = [ordered]@{
     fit_max_tokens = $true
     sampling = @{temperature = 0.6; top_p = 0.95}
 }
-($settings | ConvertTo-Json -Depth 8) | Set-Content -Encoding UTF8 -Path $config
+[IO.File]::WriteAllText($config, ($settings | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 Write-Host "Strata configuration ready: $config"
 Write-Host "Context: $Context | Address: http://127.0.0.1:18084/v1"
