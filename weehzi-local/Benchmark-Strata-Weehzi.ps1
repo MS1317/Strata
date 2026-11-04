@@ -9,7 +9,7 @@ if ($health.status -ne 'ok' -or !$health.loaded) {
     throw "Strata is not loaded at $uri. Start it yourself when your PC has enough memory."
 }
 $body = @{
-    model = 'qwen3.5-9b-strata-weehzi'
+    model = 'qwen3.5-4b-strata-weehzi'
     messages = @(@{role='user';content='In one sentence, explain what a laptop does.'})
     max_tokens = $MaxTokens
     temperature = 0
