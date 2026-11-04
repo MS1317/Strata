@@ -1,7 +1,7 @@
 # Creates the isolated local Strata server configuration. Does not launch the GPU.
 param(
     [ValidateSet(2048, 4096, 8192, 16384, 32768, 65536)]
-    [int]$Context = 4096,
+    [int]$Context = 32768,
     [switch]$GpuFirst,
     [switch]$HeadFast
 )
