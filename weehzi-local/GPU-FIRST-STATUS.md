@@ -1,6 +1,6 @@
 # GPU-first Strata for this Windows PC
 
-**State (4 November 2026):** Source, CPU policy tests, CUDA compilation, hosted Windows build and on-PC **executable installation** are complete. The new GPU-first engine still needs real-model inference, memory-pressure and speed tests.
+**State (4 November 2026):** Source, CPU policy tests, CUDA compilation, hosted Windows build, executable installation **and first controlled 9B GPU inference comparison** are complete. Real multi-turn chat, pressure-release behavior and Weehzi tool-calling still need testing.
 
 ## Agreed behavior
 
@@ -37,7 +37,24 @@ Optional per-process overrides, for advanced troubleshooting: `STRATA_Q35_GPU_CA
 - Basic requests produced correct visible answers when thinking mode was disabled.
 - Previously observed output speed: approximately **0.6–1.4 tokens/sec** with the uncached version. These are small, non-standardized tests, **not** a controlled benchmark.
 
-The new GPU-first executable **launches** on the PC, and the configuration correctly points to it, but real 9B inference has **not** been run with this version. We do **not** claim any speed improvement yet.
+The GPU-first executable loaded the real 9B GGUF, generated output, and exited normally. It was not left running.
+
+### Controlled on-PC comparison (4 November 2026)
+
+Both Windows executables used exactly the same model and short test: context 4096, chunk 128, no CUDA graph, input token ID `198`, generate 8 tokens. The outputs matched exactly:
+
+`2 220 16 13 220 16 13 220`
+
+| Measurement | Original | GPU-first |
+| --- | ---: | ---: |
+| Time for 8 generated tokens | 6011.9 ms | **4033.1 ms** |
+| Generation throughput | 1.3 tok/sec | **2.0 tok/sec** |
+| Prompt throughput | 1.2 tok/sec | **1.5 tok/sec** |
+| Warmup | 7.2 sec | 6.4 sec |
+
+That's roughly 1.5x generation throughput for this **single very small benchmark**. It is **not** proof of meaningful real-world Weehzi speed, tool-call quality, 64K context, or successful GPU-memory eviction under competing applications.
+
+The first GPU-first smoke also loaded and returned two generated tokens with no error. The GPU cache reported 796 MiB resident early in that run. Both tests exited naturally; no other application was stopped.
 
 ## How to resume safely
 
